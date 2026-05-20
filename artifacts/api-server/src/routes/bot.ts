@@ -2,27 +2,26 @@ import { Router, type IRouter } from "express";
 
 const router: IRouter = Router();
 
-const PAYSTACK_BASE = "https://api.paystack.co";
-const TG_BASE = () => `https://api.telegram.org/bot${process.env["TELEGRAM_BOT_TOKEN"]}`;
-const PAYSTACK_KEY = () => process.env["PAYSTACK_SECRET_KEY"] ?? "";
+const PAYSTACK_BASE  = "https://api.paystack.co";
+const TG_BASE        = () => `https://api.telegram.org/bot${process.env["TELEGRAM_BOT_TOKEN"]}`;
+const PAYSTACK_KEY   = () => process.env["PAYSTACK_SECRET_KEY"] ?? "";
+const FRONTEND_URL   = process.env["FRONTEND_URL"] ?? `https://${process.env["REPLIT_DOMAINS"] ?? ""}`;
 
-// In-memory session store: chatId → { step, amount, phone, reference }
+// In-memory session store
 const sessions = new Map<number, { step: string; amount?: number; phone?: string; reference?: string }>();
 
 // ─── Webhook entry — respond 200 immediately, process async ──────────────────
 router.post("/bot", (req, res) => {
-  res.sendStatus(200); // Telegram gets instant acknowledgement
+  res.sendStatus(200);
   const update = req.body as TelegramUpdate;
   handleUpdate(update).catch(() => {/* silent */});
 });
 
-// ─── Types ────────────────────────────────────────────────────────────────────
 interface TelegramUpdate {
   message?: {
     chat: { id: number; first_name?: string };
     text?: string;
-    message_id?: number;
-    reply_to_message?: { text?: string; message_id?: number };
+    reply_to_message?: { text?: string };
   };
 }
 
@@ -31,19 +30,45 @@ async function handleUpdate(update: TelegramUpdate) {
   const msg = update.message;
   if (!msg) return;
 
-  const chatId     = msg.chat.id;
-  const firstName  = msg.chat.first_name ?? "there";
-  const text       = (msg.text ?? "").trim();
-  const replyText  = msg.reply_to_message?.text ?? "";
-  const session    = sessions.get(chatId) ?? { step: "idle" };
+  const chatId    = msg.chat.id;
+  const firstName = esc(msg.chat.first_name ?? "there");
+  const text      = (msg.text ?? "").trim();
+  const replyText = msg.reply_to_message?.text ?? "";
+  const session   = sessions.get(chatId) ?? { step: "idle" };
 
   // ── /start  /pay  1 ────────────────────────────────────────────────────────
   if (["/start", "/pay", "1"].includes(text) || text.toLowerCase() === "pay") {
+    sessions.set(chatId, { step: "await_method" });
+    await sendWithButtons(chatId,
+      `👋 <b>Welcome, ${firstName}!</b>\n\n` +
+      `You've reached the <b>BintuPay Secure Payment Portal</b>.\n\n` +
+      `How would you like to pay?`,
+      [[
+        { text: "💚  M-Pesa", callback_data: "method_mpesa" },
+        { text: "💳  Card Payment", url: FRONTEND_URL },
+      ]]
+    );
+    return;
+  }
+
+  // ── /card or "card" keyword ────────────────────────────────────────────────
+  if (text === "/card" || text.toLowerCase() === "card") {
+    await sendWithButtons(chatId,
+      `💳 <b>Card Payment</b>\n\n` +
+      `Tap the button below to open the <b>BintuPay secure card payment page</b>.\n\n` +
+      `<i>You can pay with Visa, Mastercard, or Amex — protected by 256-bit SSL encryption.</i>`,
+      [[{ text: "🔒  Open Card Payment Page", url: FRONTEND_URL }]]
+    );
+    return;
+  }
+
+  // ── /mpesa ─────────────────────────────────────────────────────────────────
+  if (text === "/mpesa" || text === "mpesa") {
     sessions.set(chatId, { step: "await_amount" });
     await sendForceReply(chatId,
-      `👋 Welcome back, *${escMd(firstName)}*\\!\n\n` +
-      `You've reached the *BintuPay Secure Payment Portal*\\.\n\n` +
-      `Please enter the *amount* you wish to pay \\(KES\\)\\. For example: \`500\``
+      `💚 <b>M-Pesa Payment</b>\n\n` +
+      `Please enter the <b>amount</b> you wish to pay (KES):\n` +
+      `<i>Example: 500</i>`
     );
     return;
   }
@@ -51,17 +76,21 @@ async function handleUpdate(update: TelegramUpdate) {
   // ── /help ──────────────────────────────────────────────────────────────────
   if (text === "/help") {
     await sendMsg(chatId,
-      `🛡 *BintuPay Payment Bot — Help Guide*\n\n` +
-      `Here's how to make a payment:\n\n` +
-      `1\\. Type \`/pay\` to start a new transaction\n` +
-      `2\\. Enter the payment amount when prompted\n` +
-      `3\\. Enter your M\\-Pesa phone number\n` +
-      `4\\. Check your phone for the STK push and enter your PIN\n` +
-      `5\\. Receive instant confirmation once payment is verified\n\n` +
-      `*Other commands:*\n` +
-      `• \`/status\` — check a transaction by reference\n` +
-      `• \`/receipt\` — retrieve a payment receipt\n\n` +
-      `_All transactions are secured end\\-to\\-end via Paystack\\._`
+      `🛡 <b>BintuPay — Help Guide</b>\n\n` +
+      `<b>Commands:</b>\n` +
+      `/pay — Start a new payment\n` +
+      `/mpesa — Pay via M-Pesa\n` +
+      `/card — Pay via credit/debit card\n` +
+      `/status — Check a transaction\n` +
+      `/receipt — Get a payment receipt\n` +
+      `/help — Show this guide\n\n` +
+      `<b>M-Pesa steps:</b>\n` +
+      `1. Type /pay and choose M-Pesa\n` +
+      `2. Enter the amount\n` +
+      `3. Enter your phone number\n` +
+      `4. Enter your PIN on the STK push\n` +
+      `5. Receive instant confirmation\n\n` +
+      `<i>All transactions are secured via Paystack.</i>`
     );
     return;
   }
@@ -70,7 +99,8 @@ async function handleUpdate(update: TelegramUpdate) {
   if (text === "/status") {
     sessions.set(chatId, { step: "await_status_ref" });
     await sendForceReply(chatId,
-      `🔍 *Transaction Status Check*\n\nPlease enter your *transaction reference* to check its current status:`
+      `🔍 <b>Transaction Status</b>\n\n` +
+      `Enter your <b>transaction reference</b> to check its status:`
     );
     return;
   }
@@ -79,44 +109,49 @@ async function handleUpdate(update: TelegramUpdate) {
   if (text === "/receipt") {
     sessions.set(chatId, { step: "await_receipt_ref" });
     await sendForceReply(chatId,
-      `🧾 *Payment Receipt Lookup*\n\nPlease enter your *transaction reference* to retrieve your receipt:`
+      `🧾 <b>Payment Receipt</b>\n\n` +
+      `Enter your <b>transaction reference</b> to retrieve your receipt:`
     );
     return;
   }
 
-  // ── Session-based step handling ────────────────────────────────────────────
-
-  // Detect step from session OR fall back to reading reply context
-  let step = session.step;
-  if (step === "idle" && replyText) {
-    if (replyText.includes("amount you wish to pay") || replyText.includes("exact amount")) step = "await_amount";
-    else if (replyText.includes("M-Pesa phone number") || replyText.includes("phone number to charge")) step = "await_phone";
-    else if (replyText.includes("transaction reference") && replyText.includes("status")) step = "await_status_ref";
-    else if (replyText.includes("transaction reference") && replyText.includes("receipt")) step = "await_receipt_ref";
+  // Inline: /receipt <ref>
+  if (text.startsWith("/receipt ")) {
+    await buildAndSendReceipt(chatId, text.replace("/receipt ", "").trim());
+    return;
   }
 
-  // STEP: amount
+  // ── Session / reply-context step detection ─────────────────────────────────
+  let step = session.step;
+  if (step === "idle" && replyText) {
+    if (replyText.includes("amount") && replyText.includes("KES"))     step = "await_amount";
+    else if (replyText.includes("phone number"))                        step = "await_phone";
+    else if (replyText.includes("status") && replyText.includes("reference")) step = "await_status_ref";
+    else if (replyText.includes("receipt") && replyText.includes("reference")) step = "await_receipt_ref";
+  }
+
+  // STEP: amount ──────────────────────────────────────────────────────────────
   if (step === "await_amount") {
     const num = parseFloat(text.replace(/,/g, ""));
     if (isNaN(num) || num < 10) {
       await sendForceReply(chatId,
-        `⚠️ *Invalid Amount*\n\nMinimum transaction is KES 10\\.\n\nPlease enter a valid amount \\(KES\\):`
+        `⚠️ <b>Invalid Amount</b>\n\n` +
+        `Minimum transaction is KES 10.\n\n` +
+        `Enter a valid amount (KES):`
       );
       return;
     }
     sessions.set(chatId, { step: "await_phone", amount: Math.round(num) });
-    const fmt = Math.round(num).toLocaleString();
     await sendForceReply(chatId,
-      `✅ *Amount Set:* KES ${escMd(fmt)}\n\n` +
-      `Now please enter the *M\\-Pesa phone number* to charge\\.\n` +
-      `Accepted formats: \`07XXXXXXXX\` or \`01XXXXXXXX\``
+      `✅ <b>Amount set:</b> KES ${Math.round(num).toLocaleString()}\n\n` +
+      `Enter the <b>M-Pesa phone number</b> to charge:\n` +
+      `<i>Format: 07XXXXXXXX or 01XXXXXXXX</i>`
     );
     return;
   }
 
-  // STEP: phone → trigger charge + poll
+  // STEP: phone → trigger charge + poll ──────────────────────────────────────
   if (step === "await_phone") {
-    // Recover amount from session or reply context
     let amount = session.amount ?? 0;
     if (!amount) {
       const m = replyText.match(/KES\s*([\d,]+)/i);
@@ -124,7 +159,7 @@ async function handleUpdate(update: TelegramUpdate) {
     }
     if (!amount) {
       await sendMsg(chatId,
-        `⚠️ *Session Expired*\n\nWe could not retrieve your session\\. Please type \`/pay\` to start again\\.`
+        `⚠️ <b>Session Expired</b>\n\nWe could not retrieve your session. Type /pay to start again.`
       );
       sessions.delete(chatId);
       return;
@@ -133,79 +168,84 @@ async function handleUpdate(update: TelegramUpdate) {
     const phone = text.replace(/\D/g, "");
     if (!/^(07|01)\d{8}$/.test(phone)) {
       await sendForceReply(chatId,
-        `⚠️ *Invalid Phone Number*\n\n` +
-        `\`${escMd(phone)}\` is not recognised\\. Use format \`07XXXXXXXX\` or \`01XXXXXXXX\`:`
+        `⚠️ <b>Invalid Phone Number</b>\n\n` +
+        `<code>${esc(phone)}</code> is not recognised.\n` +
+        `Use format <code>07XXXXXXXX</code> or <code>01XXXXXXXX</code>:`
       );
       return;
     }
 
     sessions.set(chatId, { step: "processing", amount, phone });
-
     await sendMsg(chatId,
-      `⏳ *Initiating Secure Transaction\\.\\.\\.*\n\n` +
-      `_Connecting to M\\-Pesa for KES ${escMd(amount.toLocaleString())} — please wait\\._`
+      `⏳ <b>Initiating Secure Transaction…</b>\n\n` +
+      `<i>Connecting to M-Pesa for KES ${amount.toLocaleString()} — please wait.</i>`
     );
 
-    // Format phone for Paystack
     const formatted = `+254${phone.slice(1)}`;
-    const email = `user_${phone}@bintupay.com`;
+    const email     = `user_${phone}@bintupay.com`;
+    let reference   = "";
 
-    let reference = "";
     try {
       const chargeRes = await paystackPost("/charge", {
-        email,
-        amount: amount * 100,
-        currency: "KES",
+        email, amount: amount * 100, currency: "KES",
         mobile_money: { phone: formatted, provider: "mpesa" },
       });
 
-      if (!chargeRes.status || !chargeRes.data?.reference) {
+      if (!chargeRes.status || !(chargeRes.data as Record<string,string>)?.reference) {
         await sendMsg(chatId,
-          `❌ *Payment Initialisation Failed*\n\n` +
-          `📋 *Reason:* ${escMd(chargeRes.message ?? "Gateway rejected the request")}\n\n` +
-          `_Type \`/pay\` to try again\\._`
+          `❌ <b>Payment Initialisation Failed</b>\n\n` +
+          `<b>Reason:</b> ${esc(chargeRes.message ?? "Gateway rejected the request")}\n\n` +
+          `<i>Type /pay to try again.</i>`
         );
         sessions.set(chatId, { step: "idle" });
         return;
       }
 
-      reference = chargeRes.data.reference as string;
+      reference = (chargeRes.data as Record<string,string>).reference;
       sessions.set(chatId, { step: "polling", amount, phone, reference });
 
       await sendMsg(chatId,
-        `📲 *STK Push Sent Successfully*\n\n` +
-        `A payment request of *KES ${escMd(amount.toLocaleString())}* has been sent to \`${escMd(phone)}\`\\.\n\n` +
-        `👉 Open your phone and enter your *M\\-Pesa PIN* to complete the payment\\.\n\n` +
-        `🔐 Reference: \`${escMd(reference)}\`\n\n` +
-        `⏳ _Monitoring status — you will be notified immediately once it confirms\\._`
+        `📲 <b>STK Push Sent!</b>\n\n` +
+        `<pre>` +
+        `Amount : KES ${amount.toLocaleString()}\n` +
+        `Phone  : ${phone}\n` +
+        `Ref    : ${reference}` +
+        `</pre>\n` +
+        `👉 Open your phone and enter your <b>M-Pesa PIN</b> to complete.\n\n` +
+        `<i>Monitoring status — you will be notified immediately once it confirms.</i>`
       );
     } catch {
-      await sendMsg(chatId, `❌ *Network Error*\n\nCould not reach the payment gateway\\. Please try again with \`/pay\`\\.`);
+      await sendMsg(chatId, `❌ <b>Network Error</b>\n\nCould not reach the payment gateway. Please try again with /pay.`);
       sessions.set(chatId, { step: "idle" });
       return;
     }
 
-    // Poll Paystack every 3s for up to 50s (16 checks)
+    // Poll every 3s for up to 50s
     let resolved = false;
     for (let i = 0; i < 16; i++) {
       await sleep(3000);
       try {
-        const check = await paystackGet(`/transaction/verify/${encodeURIComponent(reference)}`);
-        const txStatus = (check.data as Record<string, string>)?.status ?? "";
-        const gwMsg    = (check.data as Record<string, string>)?.gateway_response ?? "Unknown";
+        const check    = await paystackGet(`/transaction/verify/${encodeURIComponent(reference)}`);
+        const txStatus = (check.data as Record<string,string>)?.status ?? "";
+        const gwMsg    = (check.data as Record<string,string>)?.gateway_response ?? "Unknown";
 
         if (txStatus === "success") {
           sessions.set(chatId, { step: "idle" });
           await sendMsg(chatId,
-            `🎉 *Payment Confirmed\\!*\n\n` +
-            `━━━━━━━━━━━━━━━━━━━━\n` +
-            `💰 *Amount:* KES ${escMd(amount.toLocaleString())}\n` +
-            `📱 *Phone:* \`${escMd(phone)}\`\n` +
-            `🆔 *Reference:* \`${escMd(reference)}\`\n` +
-            `✅ *Status:* Successful\n` +
-            `━━━━━━━━━━━━━━━━━━━━\n\n` +
-            `Your payment has been received and confirmed\\. Thank you for using *BintuPay*\\!\n\n` +
-            `_Type \`/receipt ${escMd(reference)}\` to get your receipt, or \`/pay\` to make another payment\\._`
+            `🎉 <b>Payment Confirmed!</b>\n\n` +
+            `<pre>` +
+            `━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+            `  BINTUPAY — RECEIPT\n` +
+            `━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+            `Amount : KES ${amount.toLocaleString()}\n` +
+            `Phone  : ${phone}\n` +
+            `Method : M-Pesa\n` +
+            `Ref    : ${reference}\n` +
+            `Status : CONFIRMED ✅\n` +
+            `━━━━━━━━━━━━━━━━━━━━━━━━` +
+            `</pre>\n\n` +
+            `Your payment has been received. Thank you for using <b>BintuPay</b>!\n\n` +
+            `<i>Type /receipt ${esc(reference)} to retrieve this receipt again.</i>`
           );
           resolved = true;
           break;
@@ -214,23 +254,25 @@ async function handleUpdate(update: TelegramUpdate) {
         if (txStatus === "failed") {
           sessions.set(chatId, { step: "idle" });
           await sendMsg(chatId,
-            `❌ *Transaction Declined*\n\n` +
-            `Your payment of KES ${escMd(amount.toLocaleString())} could not be processed\\.\n\n` +
-            `📋 *Reason:* \`${escMd(gwMsg)}\`\n\n` +
+            `❌ <b>Transaction Declined</b>\n\n` +
+            `<pre>` +
+            `Amount : KES ${amount.toLocaleString()}\n` +
+            `Phone  : ${phone}\n` +
+            `Reason : ${gwMsg}` +
+            `</pre>\n\n` +
             `Please check:\n` +
-            `• Your M\\-Pesa balance is sufficient\n` +
-            `• Your PIN was entered correctly\n` +
-            `• You have not exceeded your daily transaction limit\n\n` +
-            `_Type \`/pay\` to retry\\._`
+            `• Sufficient M-Pesa balance\n` +
+            `• Correct PIN was entered\n` +
+            `• Daily transaction limit not exceeded\n\n` +
+            `<i>Type /pay to retry.</i>`
           );
           resolved = true;
           break;
         }
 
-        // Midway nudge at ~24 seconds
         if (i === 7) {
           await sendMsg(chatId,
-            `🔄 _Still waiting for your PIN confirmation\\. Please check your phone and enter your M\\-Pesa PIN\\._`
+            `🔄 <i>Still waiting for your PIN confirmation. Please check your phone and enter your M-Pesa PIN.</i>`
           );
         }
       } catch { /* keep polling */ }
@@ -239,83 +281,76 @@ async function handleUpdate(update: TelegramUpdate) {
     if (!resolved) {
       sessions.set(chatId, { step: "idle" });
       await sendMsg(chatId,
-        `⏰ *Verification Timeout*\n\n` +
-        `We could not confirm your transaction within 50 seconds\\.\n\n` +
-        `🔍 *Reference:* \`${escMd(reference)}\`\n\n` +
-        `Your payment may still be processing\\. Check your M\\-Pesa messages for confirmation\\. ` +
-        `If funds were deducted without service delivery, contact support with the reference above\\.\n\n` +
-        `_Type \`/pay\` to start a new transaction\\._`
+        `⏰ <b>Verification Timeout</b>\n\n` +
+        `<pre>Ref : ${reference}</pre>\n` +
+        `We could not confirm within 50 seconds.\n\n` +
+        `Check your M-Pesa messages for confirmation. If funds were deducted without service, contact support with the reference above.\n\n` +
+        `<i>Type /pay to start a new transaction.</i>`
       );
     }
     return;
   }
 
-  // STEP: status check by reference
+  // STEP: status reference ────────────────────────────────────────────────────
   if (step === "await_status_ref") {
     const ref = text.trim();
     sessions.set(chatId, { step: "idle" });
-    await sendMsg(chatId, `🔍 _Checking status for \`${escMd(ref)}\`\\.\\.\\._`);
+    await sendMsg(chatId, `🔍 <i>Checking status for <code>${esc(ref)}</code>…</i>`);
     try {
-      const check = await paystackGet(`/transaction/verify/${encodeURIComponent(ref)}`);
-      const status = (check.data as Record<string, string>)?.status ?? "";
-      const gwMsg  = (check.data as Record<string, string>)?.gateway_response ?? "Unknown";
-      if (status === "success") {
-        await sendMsg(chatId,
-          `✅ *Transaction Confirmed*\n\n🆔 *Reference:* \`${escMd(ref)}\`\n📋 *Status:* Successful\n\n_This transaction completed successfully\\._`
-        );
-      } else if (status === "failed") {
-        await sendMsg(chatId,
-          `❌ *Transaction Failed*\n\n🆔 *Reference:* \`${escMd(ref)}\`\n📋 *Reason:* \`${escMd(gwMsg)}\`\n\n_Type \`/pay\` to retry\\._`
-        );
-      } else if (status) {
-        await sendMsg(chatId,
-          `⏳ *Transaction Pending*\n\n🆔 *Reference:* \`${escMd(ref)}\`\n📋 *Status:* \`${escMd(status)}\`\n\n_Still processing\\. Check again in a moment\\._`
-        );
-      } else {
-        await sendMsg(chatId,
-          `⚠️ *Reference Not Found*\n\nNo transaction found for \`${escMd(ref)}\`\\. Please double\\-check and try again\\.`
-        );
-      }
+      const check    = await paystackGet(`/transaction/verify/${encodeURIComponent(ref)}`);
+      const status   = (check.data as Record<string,string>)?.status ?? "";
+      const gwMsg    = (check.data as Record<string,string>)?.gateway_response ?? "Unknown";
+      const icon     = status === "success" ? "✅" : status === "failed" ? "❌" : "⏳";
+      await sendMsg(chatId,
+        `${icon} <b>Transaction Status</b>\n\n` +
+        `<pre>` +
+        `Reference : ${ref}\n` +
+        `Status    : ${status || "not found"}\n` +
+        (gwMsg && status !== "success" ? `Note      : ${gwMsg}` : "") +
+        `</pre>` +
+        (status !== "success" && status !== "failed" && status ? `\n<i>Still processing. Check again in a moment.</i>` : "") +
+        (!status ? `\n<i>No transaction found. Please verify the reference.</i>` : "")
+      );
     } catch {
-      await sendMsg(chatId, `❌ *Error*\n\nCould not verify the reference\\. Please try again\\.`);
+      await sendMsg(chatId, `❌ <b>Error</b>\n\nCould not verify the reference. Please try again.`);
     }
     return;
   }
 
-  // STEP: receipt by reference
+  // STEP: receipt reference ───────────────────────────────────────────────────
   if (step === "await_receipt_ref") {
-    const ref = text.trim();
     sessions.set(chatId, { step: "idle" });
-    await buildAndSendReceipt(chatId, ref);
+    await buildAndSendReceipt(chatId, text.trim());
     return;
   }
 
-  // Inline /receipt <reference> shortcut
-  if (text.startsWith("/receipt ")) {
-    const ref = text.replace("/receipt ", "").trim();
-    await buildAndSendReceipt(chatId, ref);
-    return;
-  }
-
-  // ── Fallback ──────────────────────────────────────────────────────────────
-  await sendMsg(chatId,
-    `ℹ️ *BintuPay Payment Bot*\n\n` +
-    `• \`/pay\` — start a new payment\n` +
-    `• \`/status\` — check a transaction\n` +
-    `• \`/receipt\` — get a payment receipt\n` +
-    `• \`/help\` — full instructions`
+  // ── Fallback ────────────────────────────────────────────────────────────────
+  await sendWithButtons(chatId,
+    `ℹ️ <b>BintuPay Payment Bot</b>\n\n` +
+    `Choose an option or use a command:\n` +
+    `/pay — new payment\n` +
+    `/status — check transaction\n` +
+    `/receipt — get receipt\n` +
+    `/help — full guide`,
+    [[
+      { text: "💚  M-Pesa", callback_data: "method_mpesa" },
+      { text: "💳  Card Payment", url: FRONTEND_URL },
+    ]]
   );
 }
 
 // ─── Receipt builder ─────────────────────────────────────────────────────────
 async function buildAndSendReceipt(chatId: number, reference: string) {
-  await sendMsg(chatId, `🧾 _Retrieving receipt for \`${escMd(reference)}\`\\.\\.\\._`);
+  await sendMsg(chatId, `🧾 <i>Retrieving receipt for <code>${esc(reference)}</code>…</i>`);
   try {
     const check = await paystackGet(`/transaction/verify/${encodeURIComponent(reference)}`);
     const d = check.data as Record<string, unknown> | null;
+
     if (!check.status || !d) {
       await sendMsg(chatId,
-        `⚠️ *Receipt Not Found*\n\nNo transaction found for \`${escMd(reference)}\`\\.\n\n_Please verify the reference and try again\\._`
+        `⚠️ <b>Receipt Not Found</b>\n\n` +
+        `No transaction found for <code>${esc(reference)}</code>.\n` +
+        `<i>Please verify the reference and try again.</i>`
       );
       return;
     }
@@ -326,47 +361,50 @@ async function buildAndSendReceipt(chatId: number, reference: string) {
     const gwMsg    = (d["gateway_response"] as string) ?? "";
     const paidAt   = d["paid_at"]           as string | null;
     const channel  = (d["channel"]          as string) ?? "unknown";
-
     const customerData = d["customer"] as Record<string, string> | null;
-    const email  = customerData?.["email"]       ?? "";
-    const mobile = (d["authorization"] as Record<string, string> | null)?.["mobile_money_number"]
-                ?? (d["authorization"] as Record<string, string> | null)?.["last4"]
-                ?? "";
-
-    const dateStr = paidAt
+    const email    = customerData?.["email"] ?? "";
+    const authData = d["authorization"]     as Record<string, string> | null;
+    const mobile   = authData?.["mobile_money_number"] ?? authData?.["last4"] ?? "";
+    const dateStr  = paidAt
       ? new Date(paidAt).toLocaleString("en-KE", { dateStyle: "medium", timeStyle: "short" })
       : "—";
 
-    const statusIcon = status === "success" ? "✅" : status === "failed" ? "❌" : "⏳";
-    const methodLabel = channel === "mobile_money" ? "M\\-Pesa" : channel === "card" ? "Card" : escMd(channel);
-
     if (status !== "success") {
       await sendMsg(chatId,
-        `❌ *No Receipt Available*\n\n` +
-        `🆔 *Reference:* \`${escMd(reference)}\`\n` +
-        `📋 *Status:* ${escMd(status)}\n` +
-        `📝 *Note:* ${escMd(gwMsg || "Transaction was not successful")}\n\n` +
-        `_Receipts are only issued for confirmed payments\\._`
+        `❌ <b>No Receipt Available</b>\n\n` +
+        `<pre>` +
+        `Reference : ${reference}\n` +
+        `Status    : ${status}\n` +
+        (gwMsg ? `Note      : ${gwMsg}` : "") +
+        `</pre>\n` +
+        `<i>Receipts are only issued for confirmed payments.</i>`
       );
       return;
     }
 
+    const methodLabel = channel === "mobile_money" ? "M-Pesa" : channel === "card" ? "Card" : channel;
+
     await sendMsg(chatId,
-      `🧾 *BintuPay Payment Receipt*\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n\n` +
-      `${statusIcon} *Status:* Confirmed\n` +
-      `📅 *Date:* ${escMd(dateStr)}\n\n` +
-      `💰 *Amount Paid:* ${escMd(currency)} ${escMd(amount.toLocaleString("en-KE", { minimumFractionDigits: 2 }))}\n` +
-      `💳 *Method:* ${methodLabel}\n` +
-      (mobile ? `📱 *Identifier:* \`${escMd(mobile)}\`\n` : "") +
-      (email ? `📧 *Email:* ${escMd(email)}\n` : "") +
-      `\n🆔 *Transaction Reference*\n\`${escMd(reference)}\`\n\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n` +
-      `_Keep this reference for your records\\. Contact support if you need assistance\\._\n\n` +
-      `_Powered by *BintuPay* via Paystack_`
+      `🧾 <b>BintuPay — Payment Receipt</b>\n\n` +
+      `<pre>` +
+      `━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+      `  OFFICIAL RECEIPT\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+      `Date   : ${dateStr}\n` +
+      `Amount : ${currency} ${amount.toLocaleString("en-KE", { minimumFractionDigits: 2 })}\n` +
+      `Method : ${methodLabel}\n` +
+      (mobile ? `Account: ${mobile}\n` : "") +
+      (email  ? `Email  : ${email}\n`  : "") +
+      `\n` +
+      `Status : CONFIRMED ✅\n` +
+      `\n` +
+      `Ref    : ${reference}\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━━━` +
+      `</pre>\n\n` +
+      `<i>Keep this reference for your records. Powered by BintuPay via Paystack.</i>`
     );
   } catch {
-    await sendMsg(chatId, `❌ *Error*\n\nCould not retrieve the receipt at this time\\. Please try again\\.`);
+    await sendMsg(chatId, `❌ <b>Error</b>\n\nCould not retrieve the receipt at this time. Please try again.`);
   }
 }
 
@@ -379,7 +417,6 @@ async function paystackPost(path: string, body: Record<string, unknown>) {
   });
   return res.json() as Promise<{ status: boolean; message?: string; data?: unknown }>;
 }
-
 async function paystackGet(path: string) {
   const res = await fetch(`${PAYSTACK_BASE}${path}`, {
     headers: { Authorization: `Bearer ${PAYSTACK_KEY()}` },
@@ -388,34 +425,43 @@ async function paystackGet(path: string) {
 }
 
 // ─── Telegram helpers ─────────────────────────────────────────────────────────
-async function sendMsg(chatId: number, text: string) {
+async function sendMsg(chatId: number, html: string) {
   await fetch(`${TG_BASE()}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, text, parse_mode: "MarkdownV2" }),
+    body: JSON.stringify({ chat_id: chatId, text: html, parse_mode: "HTML" }),
   });
 }
 
-async function sendForceReply(chatId: number, text: string) {
+async function sendForceReply(chatId: number, html: string) {
   await fetch(`${TG_BASE()}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      chat_id: chatId,
-      text,
-      parse_mode: "MarkdownV2",
+      chat_id: chatId, text: html, parse_mode: "HTML",
       reply_markup: { force_reply: true, selective: true },
     }),
   });
 }
 
-// ─── Utils ────────────────────────────────────────────────────────────────────
-function escMd(text: string): string {
-  return String(text).replace(/([_*[\]()~`>#+\-=|{}.!\\])/g, "\\$1");
+async function sendWithButtons(chatId: number, html: string, buttons: Array<Array<{ text: string; url?: string; callback_data?: string }>>) {
+  await fetch(`${TG_BASE()}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chat_id: chatId, text: html, parse_mode: "HTML",
+      reply_markup: { inline_keyboard: buttons },
+    }),
+  });
 }
 
-function sleep(ms: number) {
-  return new Promise<void>(resolve => setTimeout(resolve, ms));
+// ─── Utils ────────────────────────────────────────────────────────────────────
+function esc(text: string): string {
+  return String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
+function sleep(ms: number) { return new Promise<void>(r => setTimeout(r, ms)); }
 
 export default router;

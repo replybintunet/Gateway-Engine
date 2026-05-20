@@ -84,8 +84,8 @@ export default function App() {
   }
   function stopPolling() { if(pollingRef.current) clearInterval(pollingRef.current); }
 
-  function closeAll() { stopAll(); setIsOpen(false); setView("checkout"); setIsSuccess(false); setOtpCode(""); setReceipt(null); setCopied(false); }
-  function goBackToCheckout() { stopAll(); setView("checkout"); setOtpCode(""); }
+  function closeAll() { stopAll(); setIsOpen(false); setView("checkout"); setIsSuccess(false); setCountdown(50); setOtpCode(""); setReceipt(null); setCopied(false); }
+  function goBackToCheckout() { stopAll(); setView("checkout"); setIsSuccess(false); setCountdown(50); setOtpCode(""); }
 
   // Starts a 50-second countdown. Calls onTimeout if it reaches 0.
   function startCountdown(onTimeout: ()=>void) {
