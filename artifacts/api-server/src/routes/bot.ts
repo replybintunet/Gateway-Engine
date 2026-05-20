@@ -1,3 +1,13 @@
+router.post("/bot", (req, res) => {
+  console.log("WEBHOOK HIT");
+  console.log("HEADERS:", req.headers["content-type"]);
+  console.log("BODY:", req.body);
+
+  res.sendStatus(200);
+
+  handleUpdate(req.body).catch(console.error);
+});
+
 import { Router, type IRouter } from "express";
 
 const router: IRouter = Router();
