@@ -1,0 +1,65 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --font-sans: var(--app-font-sans);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+:root {
+  --background: 220 20% 97%;
+  --foreground: 220 15% 15%;
+  --border: 220 15% 88%;
+  --input: 220 15% 88%;
+  --ring: 140 50% 45%;
+  --card: 0 0% 100%;
+  --card-foreground: 220 15% 15%;
+  --primary: 140 50% 45%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 220 15% 94%;
+  --secondary-foreground: 220 15% 35%;
+  --muted: 220 15% 94%;
+  --muted-foreground: 220 10% 55%;
+  --accent: 220 15% 94%;
+  --accent-foreground: 220 15% 15%;
+  --destructive: 4 70% 50%;
+  --destructive-foreground: 0 0% 100%;
+  --app-font-sans: 'Work Sans', sans-serif;
+  --radius: 0.75rem;
+}
+
+@layer base {
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0;
+    padding: 0;
+    font-family: var(--app-font-sans);
+    background-color: #0b0f17;
+    color: hsl(var(--foreground));
+    overflow: hidden;
+    height: 100vh;
+    width: 100vw;
+  }
+}
