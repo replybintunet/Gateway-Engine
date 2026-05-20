@@ -2,78 +2,122 @@ import { Router, type IRouter } from "express";
 
 const router: IRouter = Router();
 
-const PAYSTACK_BASE  = "https://api.paystack.co";
-const TG_BASE        = () => `https://api.telegram.org/bot${process.env["TELEGRAM_BOT_TOKEN"]}`;
-const PAYSTACK_KEY   = () => process.env["PAYSTACK_SECRET_KEY"] ?? "";
-const FRONTEND_URL   = process.env["FRONTEND_URL"] ?? `https://${process.env["REPLIT_DOMAINS"] ?? ""}`;
+const PAYSTACK_BASE = "https://api.paystack.co";
+const TG_BASE       = () => `https://api.telegram.org/bot${process.env["TELEGRAM_BOT_TOKEN"]}`;
+const PAYSTACK_KEY  = () => process.env["PAYSTACK_SECRET_KEY"] ?? "";
+const FRONTEND_URL  = process.env["FRONTEND_URL"] ?? `https://${process.env["REPLIT_DOMAINS"] ?? ""}`;
+
+// Preset amounts shown as quick-pick buttons (KES)
+const PRESET_AMOUNTS = [99, 500, 1000];
 
 // In-memory session store
-const sessions = new Map<number, { step: string; amount?: number; phone?: string; reference?: string }>();
+type Session = { step: string; amount?: number; phone?: string; reference?: string };
+const sessions = new Map<number, Session>();
 
-// ─── Webhook entry — respond 200 immediately, process async ──────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────
+interface TelegramMessage {
+  chat: { id: number; first_name?: string };
+  text?: string;
+  reply_to_message?: { text?: string };
+}
+interface TelegramUpdate {
+  message?: TelegramMessage;
+  callback_query?: {
+    id: string;
+    from: { id: number; first_name?: string };
+    message?: { chat: { id: number } };
+    data?: string;
+  };
+}
+type InlineButton = { text: string; url?: string; callback_data?: string };
+
+// ─── Webhook entry ────────────────────────────────────────────────────────────
 router.post("/bot", (req, res) => {
   res.sendStatus(200);
   const update = req.body as TelegramUpdate;
   handleUpdate(update).catch(() => {/* silent */});
 });
 
-interface TelegramUpdate {
-  message?: {
-    chat: { id: number; first_name?: string };
-    text?: string;
-    reply_to_message?: { text?: string };
-  };
+// ─── Main dispatcher ──────────────────────────────────────────────────────────
+async function handleUpdate(update: TelegramUpdate) {
+  // Callback query (inline button tap)
+  if (update.callback_query) {
+    const cq      = update.callback_query;
+    const chatId  = cq.message?.chat.id ?? cq.from.id;
+    const name    = cq.from.first_name ?? "there";
+    await answerCallback(cq.id);
+    await handleCallbackData(chatId, cq.data ?? "", name);
+    return;
+  }
+
+  // Regular message
+  if (update.message) {
+    await handleMessage(update.message);
+  }
 }
 
-// ─── Main handler ─────────────────────────────────────────────────────────────
-async function handleUpdate(update: TelegramUpdate) {
-  const msg = update.message;
-  if (!msg) return;
+// ─── Callback query handler ───────────────────────────────────────────────────
+async function handleCallbackData(chatId: number, data: string, name: string) {
+  // M-Pesa selected from method menu
+  if (data === "method_mpesa") {
+    sessions.set(chatId, { step: "await_amount" });
+    await sendAmountMenu(chatId);
+    return;
+  }
 
+  // Preset amount button
+  if (data.startsWith("amount_")) {
+    const val = data.replace("amount_", "");
+    if (val === "custom") {
+      sessions.set(chatId, { step: "await_amount_custom" });
+      await sendForceReply(chatId,
+        `✏️ <b>Enter Custom Amount</b>\n\n` +
+        `Type the amount you wish to pay (KES):\n` +
+        `<i>Minimum: KES 10</i>`
+      );
+      return;
+    }
+    const amount = parseInt(val, 10);
+    sessions.set(chatId, { step: "await_phone", amount });
+    await sendPhonePrompt(chatId, amount);
+    return;
+  }
+}
+
+// ─── Message handler ──────────────────────────────────────────────────────────
+async function handleMessage(msg: TelegramMessage) {
   const chatId    = msg.chat.id;
   const firstName = esc(msg.chat.first_name ?? "there");
   const text      = (msg.text ?? "").trim();
   const replyText = msg.reply_to_message?.text ?? "";
   const session   = sessions.get(chatId) ?? { step: "idle" };
 
-  // ── /start  /pay  1 ────────────────────────────────────────────────────────
+  // ── /start  /pay ─────────────────────────────────────────────────────────
   if (["/start", "/pay", "1"].includes(text) || text.toLowerCase() === "pay") {
     sessions.set(chatId, { step: "await_method" });
-    await sendWithButtons(chatId,
-      `👋 <b>Welcome, ${firstName}!</b>\n\n` +
-      `You've reached the <b>BintuPay Secure Payment Portal</b>.\n\n` +
-      `How would you like to pay?`,
-      [[
-        { text: "💚  M-Pesa", callback_data: "method_mpesa" },
-        { text: "💳  Card Payment", url: FRONTEND_URL },
-      ]]
-    );
+    await sendMethodMenu(chatId, firstName);
     return;
   }
 
-  // ── /card or "card" keyword ────────────────────────────────────────────────
+  // ── /card ─────────────────────────────────────────────────────────────────
   if (text === "/card" || text.toLowerCase() === "card") {
     await sendWithButtons(chatId,
       `💳 <b>Card Payment</b>\n\n` +
       `Tap the button below to open the <b>BintuPay secure card payment page</b>.\n\n` +
-      `<i>You can pay with Visa, Mastercard, or Amex — protected by 256-bit SSL encryption.</i>`,
+      `<i>Visa, Mastercard, Amex — protected by 256-bit SSL encryption.</i>`,
       [[{ text: "🔒  Open Card Payment Page", url: FRONTEND_URL }]]
     );
     return;
   }
 
-  // ── /mpesa ─────────────────────────────────────────────────────────────────
-  if (text === "/mpesa" || text === "mpesa") {
+  // ── /mpesa ───────────────────────────────────────────────────────────────
+  if (text === "/mpesa" || text.toLowerCase() === "mpesa") {
     sessions.set(chatId, { step: "await_amount" });
-    await sendForceReply(chatId,
-      `💚 <b>M-Pesa Payment</b>\n\n` +
-      `Please enter the <b>amount</b> you wish to pay (KES):\n` +
-      `<i>Example: 500</i>`
-    );
+    await sendAmountMenu(chatId);
     return;
   }
 
-  // ── /help ──────────────────────────────────────────────────────────────────
+  // ── /help ────────────────────────────────────────────────────────────────
   if (text === "/help") {
     await sendMsg(chatId,
       `🛡 <b>BintuPay — Help Guide</b>\n\n` +
@@ -84,18 +128,18 @@ async function handleUpdate(update: TelegramUpdate) {
       `/status — Check a transaction\n` +
       `/receipt — Get a payment receipt\n` +
       `/help — Show this guide\n\n` +
-      `<b>M-Pesa steps:</b>\n` +
-      `1. Type /pay and choose M-Pesa\n` +
-      `2. Enter the amount\n` +
+      `<b>M-Pesa flow:</b>\n` +
+      `1. /pay → choose M-Pesa\n` +
+      `2. Select a quick amount or enter your own\n` +
       `3. Enter your phone number\n` +
-      `4. Enter your PIN on the STK push\n` +
+      `4. Enter your M-Pesa PIN on the STK push\n` +
       `5. Receive instant confirmation\n\n` +
       `<i>All transactions are secured via Paystack.</i>`
     );
     return;
   }
 
-  // ── /status ────────────────────────────────────────────────────────────────
+  // ── /status ──────────────────────────────────────────────────────────────
   if (text === "/status") {
     sessions.set(chatId, { step: "await_status_ref" });
     await sendForceReply(chatId,
@@ -105,7 +149,7 @@ async function handleUpdate(update: TelegramUpdate) {
     return;
   }
 
-  // ── /receipt ───────────────────────────────────────────────────────────────
+  // ── /receipt ─────────────────────────────────────────────────────────────
   if (text === "/receipt") {
     sessions.set(chatId, { step: "await_receipt_ref" });
     await sendForceReply(chatId,
@@ -114,43 +158,43 @@ async function handleUpdate(update: TelegramUpdate) {
     );
     return;
   }
-
-  // Inline: /receipt <ref>
   if (text.startsWith("/receipt ")) {
     await buildAndSendReceipt(chatId, text.replace("/receipt ", "").trim());
     return;
   }
 
-  // ── Session / reply-context step detection ─────────────────────────────────
+  // ── Detect step from reply context when session is idle ──────────────────
   let step = session.step;
   if (step === "idle" && replyText) {
-    if (replyText.includes("amount") && replyText.includes("KES"))     step = "await_amount";
-    else if (replyText.includes("phone number"))                        step = "await_phone";
-    else if (replyText.includes("status") && replyText.includes("reference")) step = "await_status_ref";
-    else if (replyText.includes("receipt") && replyText.includes("reference")) step = "await_receipt_ref";
+    if (replyText.includes("custom amount") || (replyText.includes("amount") && replyText.includes("KES"))) {
+      step = "await_amount_custom";
+    } else if (replyText.includes("phone number")) {
+      step = "await_phone";
+    } else if (replyText.includes("status") && replyText.includes("reference")) {
+      step = "await_status_ref";
+    } else if (replyText.includes("receipt") && replyText.includes("reference")) {
+      step = "await_receipt_ref";
+    }
   }
 
-  // STEP: amount ──────────────────────────────────────────────────────────────
-  if (step === "await_amount") {
+  // STEP: custom amount input ──────────────────────────────────────────────
+  if (step === "await_amount_custom" || step === "await_amount") {
     const num = parseFloat(text.replace(/,/g, ""));
     if (isNaN(num) || num < 10) {
       await sendForceReply(chatId,
         `⚠️ <b>Invalid Amount</b>\n\n` +
-        `Minimum transaction is KES 10.\n\n` +
+        `Minimum is KES 10.\n\n` +
         `Enter a valid amount (KES):`
       );
       return;
     }
-    sessions.set(chatId, { step: "await_phone", amount: Math.round(num) });
-    await sendForceReply(chatId,
-      `✅ <b>Amount set:</b> KES ${Math.round(num).toLocaleString()}\n\n` +
-      `Enter the <b>M-Pesa phone number</b> to charge:\n` +
-      `<i>Format: 07XXXXXXXX or 01XXXXXXXX</i>`
-    );
+    const amount = Math.round(num);
+    sessions.set(chatId, { step: "await_phone", amount });
+    await sendPhonePrompt(chatId, amount);
     return;
   }
 
-  // STEP: phone → trigger charge + poll ──────────────────────────────────────
+  // STEP: phone → STK push + poll ──────────────────────────────────────────
   if (step === "await_phone") {
     let amount = session.amount ?? 0;
     if (!amount) {
@@ -169,7 +213,7 @@ async function handleUpdate(update: TelegramUpdate) {
     if (!/^(07|01)\d{8}$/.test(phone)) {
       await sendForceReply(chatId,
         `⚠️ <b>Invalid Phone Number</b>\n\n` +
-        `<code>${esc(phone)}</code> is not recognised.\n` +
+        `<code>${esc(phone || text)}</code> is not recognised.\n` +
         `Use format <code>07XXXXXXXX</code> or <code>01XXXXXXXX</code>:`
       );
       return;
@@ -191,7 +235,8 @@ async function handleUpdate(update: TelegramUpdate) {
         mobile_money: { phone: formatted, provider: "mpesa" },
       });
 
-      if (!chargeRes.status || !(chargeRes.data as Record<string,string>)?.reference) {
+      const data = chargeRes.data as Record<string, string> | null;
+      if (!chargeRes.status || !data?.["reference"]) {
         await sendMsg(chatId,
           `❌ <b>Payment Initialisation Failed</b>\n\n` +
           `<b>Reason:</b> ${esc(chargeRes.message ?? "Gateway rejected the request")}\n\n` +
@@ -201,7 +246,7 @@ async function handleUpdate(update: TelegramUpdate) {
         return;
       }
 
-      reference = (chargeRes.data as Record<string,string>).reference;
+      reference = data["reference"];
       sessions.set(chatId, { step: "polling", amount, phone, reference });
 
       await sendMsg(chatId,
@@ -215,23 +260,26 @@ async function handleUpdate(update: TelegramUpdate) {
         `<i>Monitoring status — you will be notified immediately once it confirms.</i>`
       );
     } catch {
-      await sendMsg(chatId, `❌ <b>Network Error</b>\n\nCould not reach the payment gateway. Please try again with /pay.`);
+      await sendMsg(chatId,
+        `❌ <b>Network Error</b>\n\nCould not reach the payment gateway. Please try again with /pay.`
+      );
       sessions.set(chatId, { step: "idle" });
       return;
     }
 
-    // Poll every 3s for up to 50s
+    // Poll every 3 s for up to 50 s
     let resolved = false;
     for (let i = 0; i < 16; i++) {
       await sleep(3000);
       try {
         const check    = await paystackGet(`/transaction/verify/${encodeURIComponent(reference)}`);
-        const txStatus = (check.data as Record<string,string>)?.status ?? "";
-        const gwMsg    = (check.data as Record<string,string>)?.gateway_response ?? "Unknown";
+        const tx       = check.data as Record<string, string> | null;
+        const txStatus = tx?.["status"] ?? "";
+        const gwMsg    = tx?.["gateway_response"] ?? "Unknown";
 
         if (txStatus === "success") {
           sessions.set(chatId, { step: "idle" });
-          await sendMsg(chatId,
+          await sendWithButtons(chatId,
             `🎉 <b>Payment Confirmed!</b>\n\n` +
             `<pre>` +
             `━━━━━━━━━━━━━━━━━━━━━━━━\n` +
@@ -244,8 +292,8 @@ async function handleUpdate(update: TelegramUpdate) {
             `Status : CONFIRMED ✅\n` +
             `━━━━━━━━━━━━━━━━━━━━━━━━` +
             `</pre>\n\n` +
-            `Your payment has been received. Thank you for using <b>BintuPay</b>!\n\n` +
-            `<i>Type /receipt ${esc(reference)} to retrieve this receipt again.</i>`
+            `Thank you for using <b>BintuPay</b>! 🙏`,
+            [[{ text: "💚  Pay Again", callback_data: "method_mpesa" }]]
           );
           resolved = true;
           break;
@@ -253,18 +301,18 @@ async function handleUpdate(update: TelegramUpdate) {
 
         if (txStatus === "failed") {
           sessions.set(chatId, { step: "idle" });
-          await sendMsg(chatId,
+          await sendWithButtons(chatId,
             `❌ <b>Transaction Declined</b>\n\n` +
             `<pre>` +
             `Amount : KES ${amount.toLocaleString()}\n` +
             `Phone  : ${phone}\n` +
-            `Reason : ${gwMsg}` +
+            `Reason : ${esc(gwMsg)}` +
             `</pre>\n\n` +
             `Please check:\n` +
             `• Sufficient M-Pesa balance\n` +
             `• Correct PIN was entered\n` +
-            `• Daily transaction limit not exceeded\n\n` +
-            `<i>Type /pay to retry.</i>`
+            `• Daily limit not exceeded`,
+            [[{ text: "🔄  Try Again", callback_data: "method_mpesa" }]]
           );
           resolved = true;
           break;
@@ -280,35 +328,35 @@ async function handleUpdate(update: TelegramUpdate) {
 
     if (!resolved) {
       sessions.set(chatId, { step: "idle" });
-      await sendMsg(chatId,
+      await sendWithButtons(chatId,
         `⏰ <b>Verification Timeout</b>\n\n` +
         `<pre>Ref : ${reference}</pre>\n` +
         `We could not confirm within 50 seconds.\n\n` +
-        `Check your M-Pesa messages for confirmation. If funds were deducted without service, contact support with the reference above.\n\n` +
-        `<i>Type /pay to start a new transaction.</i>`
+        `Check your M-Pesa messages. If funds were deducted without service, contact support with the reference above.`,
+        [[{ text: "🔄  Try Again", callback_data: "method_mpesa" }]]
       );
     }
     return;
   }
 
-  // STEP: status reference ────────────────────────────────────────────────────
+  // STEP: status reference ──────────────────────────────────────────────────
   if (step === "await_status_ref") {
     const ref = text.trim();
     sessions.set(chatId, { step: "idle" });
     await sendMsg(chatId, `🔍 <i>Checking status for <code>${esc(ref)}</code>…</i>`);
     try {
       const check    = await paystackGet(`/transaction/verify/${encodeURIComponent(ref)}`);
-      const status   = (check.data as Record<string,string>)?.status ?? "";
-      const gwMsg    = (check.data as Record<string,string>)?.gateway_response ?? "Unknown";
+      const tx       = check.data as Record<string, string> | null;
+      const status   = tx?.["status"] ?? "";
+      const gwMsg    = tx?.["gateway_response"] ?? "";
       const icon     = status === "success" ? "✅" : status === "failed" ? "❌" : "⏳";
       await sendMsg(chatId,
         `${icon} <b>Transaction Status</b>\n\n` +
         `<pre>` +
-        `Reference : ${ref}\n` +
+        `Reference : ${esc(ref)}\n` +
         `Status    : ${status || "not found"}\n` +
-        (gwMsg && status !== "success" ? `Note      : ${gwMsg}` : "") +
+        (gwMsg && status !== "success" ? `Note      : ${esc(gwMsg)}\n` : "") +
         `</pre>` +
-        (status !== "success" && status !== "failed" && status ? `\n<i>Still processing. Check again in a moment.</i>` : "") +
         (!status ? `\n<i>No transaction found. Please verify the reference.</i>` : "")
       );
     } catch {
@@ -317,21 +365,48 @@ async function handleUpdate(update: TelegramUpdate) {
     return;
   }
 
-  // STEP: receipt reference ───────────────────────────────────────────────────
+  // STEP: receipt reference ─────────────────────────────────────────────────
   if (step === "await_receipt_ref") {
     sessions.set(chatId, { step: "idle" });
     await buildAndSendReceipt(chatId, text.trim());
     return;
   }
 
-  // ── Fallback ────────────────────────────────────────────────────────────────
+  // ── Fallback ──────────────────────────────────────────────────────────────
+  await sendMethodMenu(chatId, firstName);
+}
+
+// ─── Amount menu ─────────────────────────────────────────────────────────────
+async function sendAmountMenu(chatId: number) {
+  const amountButtons: InlineButton[] = PRESET_AMOUNTS.map(a => ({
+    text: `KES ${a.toLocaleString()}`,
+    callback_data: `amount_${a}`,
+  }));
   await sendWithButtons(chatId,
-    `ℹ️ <b>BintuPay Payment Bot</b>\n\n` +
-    `Choose an option or use a command:\n` +
-    `/pay — new payment\n` +
-    `/status — check transaction\n` +
-    `/receipt — get receipt\n` +
-    `/help — full guide`,
+    `💚 <b>M-Pesa Payment</b>\n\n` +
+    `Select an amount or enter your own:`,
+    [
+      amountButtons,
+      [{ text: "✏️  Enter Amount", callback_data: "amount_custom" }],
+    ]
+  );
+}
+
+// ─── Phone prompt ─────────────────────────────────────────────────────────────
+async function sendPhonePrompt(chatId: number, amount: number) {
+  await sendForceReply(chatId,
+    `✅ <b>Amount:</b> KES ${amount.toLocaleString()}\n\n` +
+    `Enter the <b>M-Pesa phone number</b> to charge:\n` +
+    `<i>Format: 07XXXXXXXX or 01XXXXXXXX</i>`
+  );
+}
+
+// ─── Method menu ──────────────────────────────────────────────────────────────
+async function sendMethodMenu(chatId: number, firstName: string) {
+  await sendWithButtons(chatId,
+    `👋 <b>Welcome, ${firstName}!</b>\n\n` +
+    `You've reached the <b>BintuPay Secure Payment Portal</b>.\n\n` +
+    `How would you like to pay?`,
     [[
       { text: "💚  M-Pesa", callback_data: "method_mpesa" },
       { text: "💳  Card Payment", url: FRONTEND_URL },
@@ -339,12 +414,12 @@ async function handleUpdate(update: TelegramUpdate) {
   );
 }
 
-// ─── Receipt builder ─────────────────────────────────────────────────────────
+// ─── Receipt builder ──────────────────────────────────────────────────────────
 async function buildAndSendReceipt(chatId: number, reference: string) {
   await sendMsg(chatId, `🧾 <i>Retrieving receipt for <code>${esc(reference)}</code>…</i>`);
   try {
     const check = await paystackGet(`/transaction/verify/${encodeURIComponent(reference)}`);
-    const d = check.data as Record<string, unknown> | null;
+    const d     = check.data as Record<string, unknown> | null;
 
     if (!check.status || !d) {
       await sendMsg(chatId,
@@ -355,17 +430,17 @@ async function buildAndSendReceipt(chatId: number, reference: string) {
       return;
     }
 
-    const status   = (d["status"]           as string) ?? "unknown";
-    const amount   = ((d["amount"]          as number) ?? 0) / 100;
-    const currency = (d["currency"]         as string) ?? "KES";
-    const gwMsg    = (d["gateway_response"] as string) ?? "";
-    const paidAt   = d["paid_at"]           as string | null;
-    const channel  = (d["channel"]          as string) ?? "unknown";
-    const customerData = d["customer"] as Record<string, string> | null;
-    const email    = customerData?.["email"] ?? "";
-    const authData = d["authorization"]     as Record<string, string> | null;
-    const mobile   = authData?.["mobile_money_number"] ?? authData?.["last4"] ?? "";
-    const dateStr  = paidAt
+    const status    = (d["status"]           as string) ?? "unknown";
+    const amount    = ((d["amount"]          as number) ?? 0) / 100;
+    const currency  = (d["currency"]         as string) ?? "KES";
+    const gwMsg     = (d["gateway_response"] as string) ?? "";
+    const paidAt    = d["paid_at"]           as string | null;
+    const channel   = (d["channel"]          as string) ?? "unknown";
+    const customer  = d["customer"]          as Record<string, string> | null;
+    const email     = customer?.["email"]    ?? "";
+    const auth      = d["authorization"]     as Record<string, string> | null;
+    const mobile    = auth?.["mobile_money_number"] ?? auth?.["last4"] ?? "";
+    const dateStr   = paidAt
       ? new Date(paidAt).toLocaleString("en-KE", { dateStyle: "medium", timeStyle: "short" })
       : "—";
 
@@ -373,9 +448,9 @@ async function buildAndSendReceipt(chatId: number, reference: string) {
       await sendMsg(chatId,
         `❌ <b>No Receipt Available</b>\n\n` +
         `<pre>` +
-        `Reference : ${reference}\n` +
+        `Reference : ${esc(reference)}\n` +
         `Status    : ${status}\n` +
-        (gwMsg ? `Note      : ${gwMsg}` : "") +
+        (gwMsg ? `Note      : ${esc(gwMsg)}\n` : "") +
         `</pre>\n` +
         `<i>Receipts are only issued for confirmed payments.</i>`
       );
@@ -394,11 +469,11 @@ async function buildAndSendReceipt(chatId: number, reference: string) {
       `Amount : ${currency} ${amount.toLocaleString("en-KE", { minimumFractionDigits: 2 })}\n` +
       `Method : ${methodLabel}\n` +
       (mobile ? `Account: ${mobile}\n` : "") +
-      (email  ? `Email  : ${email}\n`  : "") +
+      (email  ? `Email  : ${esc(email)}\n` : "") +
       `\n` +
       `Status : CONFIRMED ✅\n` +
       `\n` +
-      `Ref    : ${reference}\n` +
+      `Ref    : ${esc(reference)}\n` +
       `━━━━━━━━━━━━━━━━━━━━━━━━` +
       `</pre>\n\n` +
       `<i>Keep this reference for your records. Powered by BintuPay via Paystack.</i>`
@@ -424,7 +499,7 @@ async function paystackGet(path: string) {
   return res.json() as Promise<{ status: boolean; message?: string; data?: unknown }>;
 }
 
-// ─── Telegram helpers ─────────────────────────────────────────────────────────
+// ─── Telegram API helpers ─────────────────────────────────────────────────────
 async function sendMsg(chatId: number, html: string) {
   await fetch(`${TG_BASE()}/sendMessage`, {
     method: "POST",
@@ -444,7 +519,7 @@ async function sendForceReply(chatId: number, html: string) {
   });
 }
 
-async function sendWithButtons(chatId: number, html: string, buttons: Array<Array<{ text: string; url?: string; callback_data?: string }>>) {
+async function sendWithButtons(chatId: number, html: string, buttons: InlineButton[][]) {
   await fetch(`${TG_BASE()}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -452,6 +527,14 @@ async function sendWithButtons(chatId: number, html: string, buttons: Array<Arra
       chat_id: chatId, text: html, parse_mode: "HTML",
       reply_markup: { inline_keyboard: buttons },
     }),
+  });
+}
+
+async function answerCallback(callbackQueryId: string) {
+  await fetch(`${TG_BASE()}/answerCallbackQuery`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ callback_query_id: callbackQueryId }),
   });
 }
 
