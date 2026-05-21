@@ -1,6 +1,6 @@
-# BintuPay Deployment Guide
+# BintuPay — Deployment Guide
 
-This guide covers deploying BintuPay (API + frontend) on **Render**, **Ubuntu VPS**, and **Termux**.
+Complete deployment instructions for **Render**, **Ubuntu VPS / localhost**, and **Termux (Android)**.
 
 ---
 
@@ -8,203 +8,264 @@ This guide covers deploying BintuPay (API + frontend) on **Render**, **Ubuntu VP
 
 | Requirement | Where to get it |
 |-------------|-----------------|
-| **Node.js 20+** | Install via NodeSource or nvm |
+| **Node.js 20+** | https://nodejs.org or via `nvm` |
 | **pnpm** | `npm i -g pnpm` |
-| **PostgreSQL 14+** | Render provides this; on VPS install `postgresql` |
-| **Paystack Secret Key** | [paystack.com](https://paystack.com) → Settings → API Keys |
-| **Telegram Bot Token** | [@BotFather](https://t.me/botfather) → /newbot |
-| **GitHub repo** (optional) | Push your code for Render auto-deploy |
-
-### Required Environment Variables
-
-```bash
-DATABASE_URL=postgres://user:pass@host:5432/dbname
-PAYSTACK_SECRET_KEY=sk_test_xxxxxxxxx
-TELEGRAM_BOT_TOKEN=xxxxxxxx:xxxxxxxxxxxxxxxx
-SESSION_SECRET=any-random-string-32-chars-plus
-FRONTEND_URL=https://your-domain.com          # optional — used by Telegram bot for card links
-PORT=8080                                      # API server port
-```
+| **PostgreSQL 14+** | Render provides it; on VPS install `postgresql` |
+| **Paystack Secret Key** | paystack.com → Settings → API Keys → Live Secret Key |
+| **Telegram Bot Token** | Telegram → @BotFather → `/newbot` |
 
 ---
 
-## 1. Deploy on Render (Easiest — Free tier available)
+## Required Environment Variables
 
-### Step 1: Push to GitHub
+Set these in your environment before starting the server:
 
 ```bash
-git remote add origin https://github.com/YOURNAME/bintupay.git
+PORT=8080
+NODE_ENV=production
+DATABASE_URL=postgres://user:pass@host:5432/dbname
+PAYSTACK_SECRET_KEY=sk_live_xxxxxxxxxxxxxxxxxx
+TELEGRAM_BOT_TOKEN=1234567890:AABBCCDDxxxxxxxxxxxx
+SESSION_SECRET=any-random-string-at-least-32-chars
+FRONTEND_URL=https://your-public-domain.com    # used by bot for card payment links
+```
+
+> **Important — Build Note:**  
+> Do NOT run `pnpm run build` (root script) in production. It tries to build  
+> the `mockup-sandbox` and `bintupay` Vite apps which require `PORT` and  
+> `BASE_PATH` env vars at build time and will crash without them.  
+> Always build only the API server with:  
+> `pnpm --filter @workspace/api-server run build`
+
+---
+
+## 1. Deploy on Render (Recommended — Free Tier Available)
+
+Render is the easiest option. The `render.yaml` in this repo handles everything automatically.
+
+### Step 1 — Push to GitHub
+
+```bash
+git remote add origin https://github.com/YOUR_USERNAME/bintupay.git
 git push -u origin main
 ```
 
-### Step 2: Create Render Services
+### Step 2 — Create Services via Blueprint
 
-Go to [dashboard.render.com](https://dashboard.render.com) and create:
+1. Go to [dashboard.render.com](https://dashboard.render.com)
+2. Click **New +** → **Blueprint**
+3. Connect your GitHub repository
+4. Render will detect `render.yaml` and propose 3 services:
+   - `bintupay-api` — Express API + Telegram bot
+   - `bintupay-web` — React frontend (static site)
+   - `bintupay-db` — PostgreSQL database
+5. Click **Apply**
 
-#### A. PostgreSQL Database
-1. Click **New** → **PostgreSQL**
-2. Name it `bintupay-db`
-3. Choose region (same as your web service)
-4. Create → copy the **Internal Database URL** (looks like `postgres://bintupay:pass@dpg-xxxxx-a.oregon-postgres.render.com/bintupay_xxxxx`)
+### Step 3 — Fill in Secrets When Prompted
 
-#### B. Web Service (API + Frontend)
-1. Click **New** → **Web Service**
-2. Connect your GitHub repo
-3. Configure:
+Render will ask you to provide:
 
-| Setting | Value |
-|---------|-------|
-| **Name** | `bintupay-api` |
-| **Runtime** | `Node` |
-| **Build Command** | `pnpm install && pnpm run build` |
-| **Start Command** | `node artifacts/api-server/dist/index.mjs` |
-| **Plan** | Free (or paid for always-on) |
+| Variable | Value |
+|----------|-------|
+| `PAYSTACK_SECRET_KEY` | Your Paystack live secret key (`sk_live_…`) |
+| `TELEGRAM_BOT_TOKEN` | Your bot token from @BotFather |
 
-4. Add **Environment Variables**:
-   - `DATABASE_URL` → paste the Postgres URL from Step A
-   - `PAYSTACK_SECRET_KEY` → your Paystack test/live key
-   - `TELEGRAM_BOT_TOKEN` → from @BotFather
-   - `SESSION_SECRET` → generate: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`
-   - `FRONTEND_URL` → your Render service URL (e.g. `https://bintupay-api.onrender.com`)
-   - `NODE_ENV` → `production`
+Everything else (`DATABASE_URL`, `SESSION_SECRET`, `FRONTEND_URL`) is auto-configured by `render.yaml`.
 
-5. Click **Create Web Service**
+### Step 4 — Wait for Build (~3–5 min)
 
-Render auto-deploys on every `git push`.
+The build command that runs is:
+```bash
+pnpm install --frozen-lockfile && pnpm --filter @workspace/api-server run build
+```
+This only compiles the API server — it avoids the Vite build-time `PORT` requirement that breaks a full root build.
 
-### Step 3: Set Telegram Webhook
+### Step 5 — Register the Telegram Webhook (Once Only)
 
-Once your Render URL is live:
+After the service is live, run this once to connect your bot:
 
 ```bash
 curl -X POST "https://api.telegram.org/botYOUR_BOT_TOKEN/setWebhook" \
   -H "Content-Type: application/json" \
-  -d '{"url":"https://bintupay-api.onrender.com/api/bot"}'
+  -d '{"url":"https://bintupay-api.onrender.com/api/bot","drop_pending_updates":true}'
 ```
 
-### Step 4: Run Database Migrations
+Confirm it worked:
+```bash
+curl "https://api.telegram.org/botYOUR_BOT_TOKEN/getWebhookInfo"
+```
 
-In Render dashboard, open your service shell and run:
+### Step 6 — Verify Everything
 
 ```bash
-pnpm --filter @workspace/db run push
+# Health check
+curl https://bintupay-api.onrender.com/api/healthz
+
+# Test M-Pesa charge endpoint
+curl -X POST https://bintupay-api.onrender.com/api/payment?action=charge \
+  -H "Content-Type: application/json" \
+  -d '{"amount":"10","phone":"0712345678"}'
 ```
 
-Or if migrations fail, use:
+### Render Notes
 
-```bash
-npx drizzle-kit push
-```
+- **Free tier sleeps after 15 min of inactivity** — upgrade to Starter ($7/mo) to stay always-on
+- **Auto-deploys on every `git push`** — no manual action needed after initial setup
+- **Frontend → API routing** — the static site rewrites `/api/*` requests to the API service automatically (configured in `render.yaml`)
 
 ---
 
-## 2. Deploy on Ubuntu VPS (DigitalOcean, Linode, AWS EC2, Hetzner)
+## 2. Deploy on Ubuntu VPS / Localhost
 
-### Step 1: Provision Server
+Works on Ubuntu 20.04, 22.04, 24.04 and any Debian-based system (including WSL on Windows).
 
-Get an Ubuntu 22.04/24.04 VPS with at least:
-- 1 CPU, 1GB RAM, 20GB SSD
-
-SSH in:
-
-```bash
-ssh root@your-server-ip
-```
-
-### Step 2: Install Dependencies
+### Step 1 — Install System Dependencies
 
 ```bash
 # Update system
-apt update && apt upgrade -y
+sudo apt update && sudo apt upgrade -y
 
 # Install Node.js 20
-curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-apt install -y nodejs
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
+
+# Confirm version (must be 20+)
+node -v
 
 # Install pnpm
 npm install -g pnpm
 
 # Install PostgreSQL
-apt install -y postgresql postgresql-contrib
+sudo apt install -y postgresql postgresql-contrib
 
-# Install PM2 (process manager)
+# Install PM2 (keeps the server running after logout)
 npm install -g pm2
 
-# Install nginx (reverse proxy)
-apt install -y nginx
+# Install nginx (routes HTTPS traffic to Node.js)
+sudo apt install -y nginx
 ```
 
-### Step 3: Set Up PostgreSQL
+### Step 2 — Set Up PostgreSQL
 
 ```bash
-# Switch to postgres user
-su - postgres
-
-# Create database and user
-psql -c "CREATE USER bintu WITH PASSWORD 'strong_password_here';"
-psql -c "CREATE DATABASE bintupay OWNER bintu;"
-psql -c "ALTER USER bintu WITH SUPERUSER;"
-exit
+sudo -u postgres psql << 'SQL'
+CREATE USER bintu WITH PASSWORD 'choose_a_strong_password';
+CREATE DATABASE bintupay OWNER bintu;
+GRANT ALL PRIVILEGES ON DATABASE bintupay TO bintu;
+SQL
 ```
 
-### Step 4: Clone & Build
+Test the connection:
+```bash
+psql "postgres://bintu:choose_a_strong_password@localhost:5432/bintupay" -c '\l'
+```
+
+### Step 3 — Clone the Repository
 
 ```bash
 cd /var/www
-git clone https://github.com/YOURNAME/bintupay.git
-cd bintupay
-
-# Install all dependencies
-pnpm install
-
-# Build everything
-pnpm run build
+sudo git clone https://github.com/YOUR_USERNAME/bintupay.git
+sudo chown -R $USER:$USER /var/www/bintupay
+cd /var/www/bintupay
 ```
 
-### Step 5: Create Environment File
+For **local development** (not a server), clone anywhere:
+```bash
+git clone https://github.com/YOUR_USERNAME/bintupay.git
+cd bintupay
+```
+
+### Step 4 — Install Dependencies
 
 ```bash
-cat > .env << 'EOF'
+pnpm install
+```
+
+### Step 5 — Build the API Server
+
+```bash
+# Build ONLY the API server (do NOT use 'pnpm run build' — see note at top)
+pnpm --filter @workspace/api-server run build
+```
+
+You should see output like:
+```
+dist/index.mjs    1.4mb
+⚡ Done in 400ms
+```
+
+### Step 6 — Create Environment File
+
+```bash
+cat > /var/www/bintupay/.env << 'EOF'
 NODE_ENV=production
-DATABASE_URL=postgres://bintu:strong_password_here@localhost:5432/bintupay
-PAYSTACK_SECRET_KEY=sk_test_xxxxxxxxx
-TELEGRAM_BOT_TOKEN=xxxxxxxx:xxxxxxxxxxxxxxxx
-SESSION_SECRET=your-random-32-char-secret
-FRONTEND_URL=https://your-domain.com
 PORT=8080
+DATABASE_URL=postgres://bintu:choose_a_strong_password@localhost:5432/bintupay
+PAYSTACK_SECRET_KEY=sk_live_xxxxxxxxxxxxxxxxxx
+TELEGRAM_BOT_TOKEN=1234567890:AABBCCDDxxxxxxxxxxxx
+SESSION_SECRET=paste-output-of-command-below
+FRONTEND_URL=https://your-domain.com
 EOF
 ```
 
-### Step 6: Run Database Migrations
+Generate `SESSION_SECRET`:
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+### Step 7 — Run Database Migrations
 
 ```bash
+cd /var/www/bintupay
 pnpm --filter @workspace/db run push
 ```
 
-If this fails, try:
-```bash
-cd lib/db && npx drizzle-kit push
-```
-
-### Step 7: Start API Server with PM2
+### Step 8 — Start with PM2
 
 ```bash
-pm2 start artifacts/api-server/dist/index.mjs --name "bintupay-api" -- --port 8080
+cd /var/www/bintupay
 
-# Save PM2 config
+# Load .env and start
+pm2 start artifacts/api-server/dist/index.mjs \
+  --name "bintupay-api" \
+  --env production \
+  -- --env-file /var/www/bintupay/.env
+
+# If your Node.js supports --env-file natively (Node 20+):
+pm2 start artifacts/api-server/dist/index.mjs \
+  --name "bintupay-api" \
+  --node-args="--env-file=/var/www/bintupay/.env"
+
+# Alternatively, export vars first then start:
+export $(cat .env | xargs) && pm2 start artifacts/api-server/dist/index.mjs --name "bintupay-api"
+
+# Save so PM2 restarts on reboot
 pm2 save
 pm2 startup systemd
+# Run the command PM2 prints
 ```
 
-### Step 8: Configure Nginx Reverse Proxy
+Check it's running:
+```bash
+pm2 status
+pm2 logs bintupay-api
+curl http://localhost:8080/api/healthz
+```
+
+### Step 9 — Configure Nginx (HTTPS Reverse Proxy)
 
 ```bash
-cat > /etc/nginx/sites-available/bintupay << 'EOF'
+sudo tee /etc/nginx/sites-available/bintupay << 'EOF'
 server {
     listen 80;
     server_name your-domain.com www.your-domain.com;
 
-    location / {
+    # Serve the React frontend (built static files)
+    root /var/www/bintupay/artifacts/bintupay/dist/public;
+    index index.html;
+
+    # Forward /api/* to Node.js
+    location /api/ {
         proxy_pass http://localhost:8080;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
@@ -215,70 +276,88 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_cache_bypass $http_upgrade;
     }
+
+    # All other routes → React app
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
 }
 EOF
 
-ln -s /etc/nginx/sites-available/bintupay /etc/nginx/sites-enabled/
-rm /etc/nginx/sites-enabled/default
-nginx -t && systemctl restart nginx
+sudo ln -s /etc/nginx/sites-available/bintupay /etc/nginx/sites-enabled/
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo nginx -t && sudo systemctl restart nginx
 ```
 
-### Step 9: SSL with Certbot (Free HTTPS)
+### Step 10 — Build the Frontend (for nginx to serve)
 
 ```bash
-apt install -y certbot python3-certbot-nginx
-certbot --nginx -d your-domain.com -d www.your-domain.com
+cd /var/www/bintupay
+PORT=10000 BASE_PATH=/ NODE_ENV=production \
+  pnpm --filter @workspace/bintupay run build
 ```
 
-### Step 10: Set Telegram Webhook
+### Step 11 — SSL with Certbot (Free HTTPS)
+
+```bash
+sudo apt install -y certbot python3-certbot-nginx
+sudo certbot --nginx -d your-domain.com -d www.your-domain.com
+```
+
+### Step 12 — Set Telegram Webhook
 
 ```bash
 curl -X POST "https://api.telegram.org/botYOUR_BOT_TOKEN/setWebhook" \
   -H "Content-Type: application/json" \
-  -d '{"url":"https://your-domain.com/api/bot"}'
+  -d '{"url":"https://your-domain.com/api/bot","drop_pending_updates":true}'
 ```
 
-### Step 11: Update Firewall
+### Step 13 — Firewall
 
 ```bash
-ufw allow 'Nginx Full'
-ufw allow OpenSSH
-ufw enable
+sudo ufw allow 'Nginx Full'
+sudo ufw allow OpenSSH
+sudo ufw enable
 ```
 
-### Useful PM2 Commands
+### Updating After Code Changes
 
 ```bash
-pm2 status                    # See running processes
-pm2 logs bintupay-api       # View logs
-pm2 restart bintupay-api    # Restart after code changes
-pm2 stop bintupay-api       # Stop the service
+cd /var/www/bintupay
+git pull origin main
+pnpm install
+pnpm --filter @workspace/api-server run build
+PORT=10000 BASE_PATH=/ NODE_ENV=production pnpm --filter @workspace/bintupay run build
+pm2 restart bintupay-api
 ```
 
 ---
 
-## 3. Deploy on Termux (Android Phone/Tablet)
+## 3. Deploy on Termux (Android)
 
-> **Warning**: Running a production payment gateway on a phone is NOT recommended for real customers. Use this only for testing, demos, or personal use.
+> **Note:** Suitable for personal use, testing, or demos. Not recommended for high-traffic production use — Android may kill background processes.
 
-### Step 1: Install Termux
+### Step 1 — Install Termux
 
-Download from [F-Droid](https://f-droid.org/packages/com.termux/) (not Play Store — it's outdated).
+Download from [F-Droid](https://f-droid.org/packages/com.termux/) (the Play Store version is outdated).
 
-### Step 2: Install Packages
-
-Open Termux and run:
+### Step 2 — Install Packages
 
 ```bash
 pkg update && pkg upgrade -y
-pkg install nodejs git postgresql nginx -y
+pkg install nodejs-lts git postgresql tmux -y
 npm install -g pnpm pm2
 ```
 
-### Step 3: Set Up PostgreSQL
+Verify Node.js:
+```bash
+node -v   # Must be 18+ (Termux provides nodejs-lts)
+```
+
+### Step 3 — Set Up PostgreSQL
 
 ```bash
-# Initialize database
+# Initialize the database cluster
 pg_ctl -D $PREFIX/var/lib/postgresql initdb
 
 # Start PostgreSQL
@@ -286,162 +365,166 @@ pg_ctl -D $PREFIX/var/lib/postgresql start
 
 # Create database
 createdb bintupay
-createuser bintu
+psql bintupay -c "CREATE USER bintu WITH PASSWORD 'password'; GRANT ALL ON DATABASE bintupay TO bintu;"
 ```
 
-### Step 4: Clone & Build
+To auto-start PostgreSQL on Termux open:
+```bash
+echo 'pg_ctl -D $PREFIX/var/lib/postgresql start' >> ~/.bashrc
+```
+
+### Step 4 — Clone & Build
 
 ```bash
 cd ~
-git clone https://github.com/YOURNAME/bintupay.git
+git clone https://github.com/YOUR_USERNAME/bintupay.git
 cd bintupay
+
+# Install dependencies
 pnpm install
-pnpm run build
+
+# Build ONLY the API server
+pnpm --filter @workspace/api-server run build
 ```
 
-### Step 5: Create .env
+### Step 5 — Create .env
 
 ```bash
-cat > .env << 'EOF'
+cat > ~/bintupay/.env << 'EOF'
 NODE_ENV=production
-DATABASE_URL=postgres://bintu@localhost:5432/bintupay
-PAYSTACK_SECRET_KEY=sk_test_xxxxxxxxx
-TELEGRAM_BOT_TOKEN=xxxxxxxx:xxxxxxxxxxxxxxxx
-SESSION_SECRET=your-random-secret-here
-FRONTEND_URL=http://localhost:8080
 PORT=8080
+DATABASE_URL=postgres://bintu:password@localhost:5432/bintupay
+PAYSTACK_SECRET_KEY=sk_live_xxxxxxxxxxxxxxxxxx
+TELEGRAM_BOT_TOKEN=1234567890:AABBCCDDxxxxxxxxxxxx
+SESSION_SECRET=random-32-char-string-here
+FRONTEND_URL=https://your-tunnel-url.ngrok-free.app
 EOF
 ```
 
-### Step 6: Run Migrations
+### Step 6 — Run Migrations
 
 ```bash
+cd ~/bintupay
 pnpm --filter @workspace/db run push
 ```
 
-### Step 7: Start the Server
+### Step 7 — Start the Server (in tmux so it survives app close)
 
 ```bash
-pm2 start artifacts/api-server/dist/index.mjs --name "bintupay" -- --port 8080
-pm2 save
+pkg install tmux
+tmux new -s bintupay
+
+# Inside tmux:
+cd ~/bintupay
+export $(cat .env | xargs) && node artifacts/api-server/dist/index.mjs
+
+# Detach (server keeps running): Ctrl+B then D
+# Reattach later: tmux attach -t bintupay
 ```
 
-### Step 8: Expose to Internet (Optional)
+### Step 8 — Expose to Internet (Required for Telegram Webhooks)
 
-For Telegram webhooks to reach your phone, you need a public URL. Options:
+Your phone needs a public HTTPS URL. Pick one:
 
-**Option A: ngrok (easiest)**
+**Option A — ngrok (easiest)**
 ```bash
-pkg install ngrok
-ngrok http 8080
-# Copy the HTTPS URL, then set webhook:
-curl -X POST "https://api.telegram.org/botYOUR_TOKEN/setWebhook" \
-  -H "Content-Type: application/json" \
-  -d '{"url":"https://your-ngrok-url.ngrok-free.app/api/bot"}'
+# In a NEW tmux window (Ctrl+B then C):
+pkg install wget
+wget https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-arm64.tgz
+tar xf ngrok-v3-stable-linux-arm64.tgz
+./ngrok http 8080
+# Copy the https://xxxxx.ngrok-free.app URL
 ```
 
-**Option B: LocalTunnel (free, no signup)**
+**Option B — Cloudflare Tunnel (free, no account needed)**
 ```bash
-npm install -g localtunnel
-lt --port 8080
-```
-
-**Option C: Cloudflare Tunnel**
-```bash
-# Install cloudflared
-pkg install cloudflared
+pkg install cloudflare-warp
 cloudflared tunnel --url http://localhost:8080
+# Copy the https://random-name.trycloudflare.com URL
 ```
 
-### Step 9: Keep Termux Running
+### Step 9 — Set Telegram Webhook
 
-Android kills background apps. To keep BintuPay alive:
+```bash
+curl -X POST "https://api.telegram.org/botYOUR_BOT_TOKEN/setWebhook" \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://YOUR_TUNNEL_URL/api/bot","drop_pending_updates":true}'
+```
 
-1. **Disable battery optimization** for Termux in Android Settings
-2. **Acquire wake lock** in Termux:
-   ```bash
-   termux-wake-lock
-   ```
-3. **Run in a tmux session** (survives closing the app):
-   ```bash
-   pkg install tmux
-   tmux new -s bintupay
-   # Inside tmux:
-   node artifacts/api-server/dist/index.mjs
-   # Press Ctrl+B then D to detach
-   # Reattach later: tmux attach -t bintupay
-   ```
+### Step 10 — Keep Termux Alive
+
+```bash
+# Prevent Android from killing Termux in background
+termux-wake-lock
+
+# In Android Settings → Battery → BintuPay/Termux → Disable battery optimization
+```
 
 ---
 
 ## Post-Deploy Checklist
 
-After any deployment, verify everything works:
+Run these after any deployment to confirm everything works:
 
 ```bash
 # 1. Health check
 curl https://your-domain.com/api/healthz
+# Expected: {"status":"ok","service":"bintupay-api","timestamp":"..."}
 
 # 2. Check Telegram webhook
 curl "https://api.telegram.org/botYOUR_TOKEN/getWebhookInfo"
+# Expected: {"ok":true,"result":{"url":"https://...","has_custom_certificate":false,...}}
 
-# 3. Test a payment (use Paystack test mode)
+# 3. Test M-Pesa endpoint
 curl -X POST https://your-domain.com/api/payment?action=charge \
   -H "Content-Type: application/json" \
-  -d '{"amount":100,"phone":"+254712345678"}'
+  -d '{"amount":"10","phone":"0712345678"}'
+# Expected: {"status":true,"data":{"reference":"...","status":"pay_offline",...}}
 
-# 4. Check logs
-pm2 logs bintupay-api   # or
-journalctl -u bintupay-api -f   # if using systemd
+# 4. Test bot — open Telegram and send /start to your bot
 ```
-
----
-
-## Updating After Code Changes
-
-```bash
-cd /var/www/bintupay   # or wherever you cloned
-git pull origin main
-pnpm install
-pnpm run build
-pm2 restart bintupay-api
-```
-
-For **Render**: Just `git push origin main` — Render auto-deploys.
 
 ---
 
 ## Troubleshooting
 
-| Problem | Fix |
-|---------|-----|
-| `PORT not set` | Add `PORT=8080` to environment variables |
-| `DATABASE_URL` error | Check Postgres is running: `sudo systemctl status postgresql` |
-| Paystack charges fail | Verify `PAYSTACK_SECRET_KEY` starts with `sk_test_` or `sk_live_` |
-| Telegram not responding | Check webhook URL: `curl botAPI/getWebhookInfo` |
-| Frontend 404 on refresh | Nginx is proxying correctly — check `location /` block |
-| Build fails | Run `pnpm install` again, ensure Node.js 20+ |
-| CORS errors | The API has CORS enabled by default — check `FRONTEND_URL` env var |
+| Problem | Cause | Fix |
+|---------|-------|-----|
+| `PORT environment variable is required` | Running `pnpm run build` at root level | Use `pnpm --filter @workspace/api-server run build` instead |
+| `BASE_PATH environment variable is required` | Same root build issue | Same fix as above |
+| `PAYSTACK_SECRET_KEY is not configured` | Missing env var | Add to `.env` or Render environment |
+| `DATABASE_URL` connection error | Postgres not running or wrong URL | Run `sudo systemctl status postgresql` |
+| Paystack returns 401 | Wrong or test key used with live endpoint | Use `sk_live_` key, not `sk_test_` |
+| Telegram bot not responding | Webhook not set or wrong URL | Re-run the `setWebhook` curl command |
+| Frontend shows blank page | Frontend not built | Run the bintupay build command with PORT and BASE_PATH |
+| `frozen-lockfile` fails on install | Lockfile out of sync | Run `pnpm install` (without `--frozen-lockfile`) once, commit `pnpm-lock.yaml` |
+| PM2 can't find `.env` | Wrong path | Use `export $(cat .env | xargs)` before `pm2 start` |
+| Render service sleeps | Free tier limitation | Upgrade to Starter plan ($7/mo) for always-on |
 
 ---
 
-## Architecture on Production
+## Architecture
 
 ```
-User/Phone
-    |
-    v
-[ Nginx / Render Proxy ]  <-- HTTPS
-    |
-    +---> [ BintuPay API Server :8080 ]
-    |       +-- /api/payment (Paystack)
-    |       +-- /api/bot (Telegram webhook)
-    |       +-- /api/healthz
-    |
-    +---> [ React Frontend ] (served by API or separate nginx)
-    |
-[ PostgreSQL ]
+Browser / Telegram
+        |
+        v (HTTPS)
+[ Nginx  OR  Render Proxy ]
+        |
+        +---> GET /*         → React frontend (static files)
+        |
+        +---> /api/payment   → Express: Paystack M-Pesa / Card charge
+        +---> /api/bot       → Express: Telegram webhook handler
+        +---> /api/healthz   → Express: health check
+        |
+        v
+[ PostgreSQL ]  (transaction history, sessions)
+        |
+        v
+[ Paystack API ]  (payment processing, verification)
+[ Telegram API ]  (bot messages, buttons)
 ```
 
-On Render, everything runs in one Web Service.  
-On VPS, Nginx handles HTTPS and routes to the Node.js API.
+On **Render**: two services (`bintupay-web` static + `bintupay-api` Node.js) + one managed Postgres.  
+On **VPS / Ubuntu**: Nginx serves static files and proxies `/api/*` to Node.js PM2 process.  
+On **Termux**: Node.js runs directly, tunnel (ngrok/cloudflared) provides the public HTTPS URL.

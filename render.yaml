@@ -37,8 +37,12 @@ services:
     region: oregon         # Change to: frankfurt (EU) or singapore (Asia)
     plan: free             # Upgrade to "starter" ($7/mo) to avoid sleep on free tier
 
-    # Build: installs all packages and compiles TypeScript to JavaScript
-    buildCommand: pnpm install --frozen-lockfile && pnpm run build
+    # Build: installs all packages and compiles ONLY the API server.
+    # We do NOT run the root `pnpm run build` here because the bintupay and
+    # mockup-sandbox Vite configs require PORT + BASE_PATH env vars at build
+    # time and will crash if those aren't set. The API server has its own
+    # standalone esbuild step that needs none of those vars.
+    buildCommand: pnpm install --frozen-lockfile && pnpm --filter @workspace/api-server run build
 
     # Start: runs the compiled API server
     startCommand: node artifacts/api-server/dist/index.mjs
