@@ -80,9 +80,8 @@ services:
         generateValue: true
 
       # The public URL of this service — used by the Telegram bot for card links
-      # Update this if you use a custom domain
       - key: FRONTEND_URL
-        value: https://bintupay-api.onrender.com
+        value: https://gateway-engine.onrender.com
 
   # ── Frontend (React + Vite, served as static files) ─────────────────────
   - type: static
@@ -95,10 +94,10 @@ services:
     # so the frontend calls the backend directly instead of relying on rewrite rules.
     buildCommand: >
       PORT=10000 BASE_PATH=/ NODE_ENV=production
-      VITE_API_URL=https://bintupay-api.onrender.com
+      VITE_API_URL=https://gateway-engine.onrender.com
       pnpm install --frozen-lockfile &&
       PORT=10000 BASE_PATH=/ NODE_ENV=production
-      VITE_API_URL=https://bintupay-api.onrender.com
+      VITE_API_URL=https://gateway-engine.onrender.com
       pnpm --filter @workspace/bintupay run build
 
     # Folder that contains the compiled frontend files
@@ -108,7 +107,7 @@ services:
     routes:
       - type: rewrite
         source: /api/*
-        destination: https://bintupay-api.onrender.com/api/*
+        destination: https://gateway-engine.onrender.com/api/*
       - type: rewrite
         source: /*
         destination: /index.html
