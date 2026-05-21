@@ -226,59 +226,46 @@ router.post("/payment", async (req, res) => {
     return;
   }
 
-  // ── Submit OTP ───────────────────────────────────────────────────────────────────────
-  if (action === "submit_otp") {
-    const { otp, reference } = req.body as { otp?: string; reference?: string };
-    if (!otp || !reference) {
-      res.json({ status: false, message: "OTP and reference are required." });
-      return;
-    }
-    try {
-      const data = await paystackPost("/charge/submit_otp", { otp, reference });
-      const d = data as Record<string, unknown>;
-      if (d["status"] === true) {
-        const inner = d["data"] as Record<string, unknown>;
-        res.json({
-          status: true,
-          data: {
-            reference,
-            status: inner["status"],
-            gateway_response: inner["gateway_response"] ?? "",
-            display_text: inner["display_text"] ?? "",
-          },
-        });
-      } else {
-        res.json({ status: false, message: (d["message"] as string) ?? "OTP rejected." });
-      }
-    } catch (err: unknown) {
-      res.json({ status: false, message: err instanceof Error ? err.message : "Gateway error." });
-    }
-    return;
-  }
+  // ── Generic Paystack submit handler (OTP, PIN, address, phone, birthday) ────────────
+  const submitActions: Record<string, { endpoint: string; bodyKey: string; label: string }> = {
+    submit_otp:      { endpoint: "/charge/submit_otp",      bodyKey: "otp",      label: "OTP" },
+    submit_pin:      { endpoint: "/charge/submit_pin",      bodyKey: "pin",      label: "PIN" },
+    submit_address:  { endpoint: "/charge/submit_address",  bodyKey: "address",  label: "Address" },
+    submit_phone:    { endpoint: "/charge/submit_phone",    bodyKey: "phone",    label: "Phone number" },
+    submit_birthday: { endpoint: "/charge/submit_birthday", bodyKey: "birthday", label: "Birthday" },
+  };
 
-  // ── Submit PIN ───────────────────────────────────────────────────────────────────────
-  if (action === "submit_pin") {
-    const { pin, reference } = req.body as { pin?: string; reference?: string };
-    if (!pin || !reference) {
-      res.json({ status: false, message: "PIN and reference are required." });
+  if (action in submitActions) {
+    const { endpoint, bodyKey, label } = submitActions[action]!;
+    const body = req.body as Record<string, string>;
+    const value = body[bodyKey] ?? body["value"] ?? "";
+    const reference = body["reference"] ?? "";
+
+    if (!value || !reference) {
+      res.json({ status: false, message: `${label} and reference are required.` });
       return;
     }
     try {
-      const data = await paystackPost("/charge/submit_pin", { pin, reference });
+      const data = await paystackPost(endpoint, { [bodyKey]: value, reference });
       const d = data as Record<string, unknown>;
       if (d["status"] === true) {
         const inner = d["data"] as Record<string, unknown>;
+        const innerStatus = (inner["status"] as string) ?? "";
+        // If Paystack returns pay_offline/open_url here, normalise it
+        const normStatus = (innerStatus === "open_url") ? "pay_offline" : innerStatus;
+        const redirectUrl = (inner["url"] as string) ?? (inner["redirecturl"] as string) ?? "";
         res.json({
           status: true,
           data: {
             reference,
-            status: inner["status"],
-            gateway_response: inner["gateway_response"] ?? "",
-            display_text: inner["display_text"] ?? "",
+            status: normStatus,
+            gateway_response: (inner["gateway_response"] as string) ?? "",
+            display_text: (inner["display_text"] as string) ?? "",
+            ...(redirectUrl ? { redirect_url: redirectUrl } : {}),
           },
         });
       } else {
-        res.json({ status: false, message: (d["message"] as string) ?? "PIN rejected." });
+        res.json({ status: false, message: (d["message"] as string) ?? `${label} rejected.` });
       }
     } catch (err: unknown) {
       res.json({ status: false, message: err instanceof Error ? err.message : "Gateway error." });

@@ -64,10 +64,15 @@ export default function App() {
   const [statusTitle,setStatusTitle] = useState("Processing…");
   const [statusDesc,setStatusDesc]   = useState("");
   const [isSuccess,setIsSuccess]     = useState(false);
-  const [otpLabel,setOtpLabel]     = useState("Enter OTP");
-  const [otpHint,setOtpHint]       = useState("");
-  const [otpCode,setOtpCode]       = useState("");
-  const [otpAction,setOtpAction]   = useState<"submit_otp"|"submit_pin">("submit_otp");
+  const [otpLabel,setOtpLabel]       = useState("Enter OTP");
+  const [otpHint,setOtpHint]         = useState("");
+  const [otpCode,setOtpCode]         = useState("");
+  const [otpAction,setOtpAction]     = useState<"submit_otp"|"submit_pin"|"submit_address"|"submit_phone"|"submit_birthday">("submit_otp");
+  const [otpInputType,setOtpInputType] = useState<"text"|"password"|"tel">("text");
+  const [otpMaxLen,setOtpMaxLen]     = useState(6);
+  const [otpPlaceholder,setOtpPlaceholder] = useState("••••••");
+  const [otpNumericOnly,setOtpNumericOnly] = useState(true);
+  const [otpBodyKey,setOtpBodyKey]   = useState("otp");
   const [pendingRef,setPendingRef] = useState("");
   const [receipt,setReceipt]       = useState<ReceiptData|null>(null);
   const [copied,setCopied]         = useState(false);
@@ -137,31 +142,68 @@ export default function App() {
     },2500);
   }
 
+  function openOtpSheet(ref: string, action: typeof otpAction, label: string, hint: string, opts: { inputType:"text"|"password"|"tel"; maxLen:number; placeholder:string; numericOnly:boolean; bodyKey:string }) {
+    stopPolling();
+    setPendingRef(ref);
+    setOtpAction(action);
+    setOtpLabel(label);
+    setOtpHint(hint);
+    setOtpInputType(opts.inputType);
+    setOtpMaxLen(opts.maxLen);
+    setOtpPlaceholder(opts.placeholder);
+    setOtpNumericOnly(opts.numericOnly);
+    setOtpBodyKey(opts.bodyKey);
+    setOtpCode("");
+    setView("otp");
+  }
+
   function handleChargeResponse(result:{status:boolean;message?:string;data?:{reference?:string;status?:string;gateway_response?:string;display_text?:string;redirect_url?:string}}, ref_fallback=""): void {
     if(!result.status){ showError(result.message??"Charge failed."); return; }
     const d=result.data!;
     const ref=d.reference??ref_fallback;
     const txStatus=d.status??"";
-    if(txStatus==="success"){ stopPolling(); if(dsPopup){ dsPopup.close(); setDsPopup(null); } showReceipt(ref); return; }
-    if(txStatus==="failed"){ stopPolling(); if(dsPopup){ dsPopup.close(); setDsPopup(null); } showError(d.gateway_response??"Declined."); return; }
-    if(txStatus==="send_otp"){ stopPolling(); setPendingRef(ref); setOtpAction("submit_otp"); setOtpLabel("Enter OTP"); setOtpHint(d.display_text??"Paystack sent a one-time password to your registered email or phone. Enter it below."); setOtpCode(""); setView("otp"); return; }
-    if(txStatus==="send_pin"){ stopPolling(); setPendingRef(ref); setOtpAction("submit_pin"); setOtpLabel("Enter Card PIN"); setOtpHint(d.display_text??"Enter your 4-digit card PIN to authorise this transaction."); setOtpCode(""); setView("otp"); return; }
+    const hint=d.display_text??"";
+
+    if(txStatus==="success"){
+      stopPolling(); if(dsPopup){ dsPopup.close(); setDsPopup(null); } showReceipt(ref); return;
+    }
+    if(txStatus==="failed"){
+      stopPolling(); if(dsPopup){ dsPopup.close(); setDsPopup(null); } showError(d.gateway_response??"Card declined."); return;
+    }
+    if(txStatus==="send_otp"){
+      openOtpSheet(ref,"submit_otp","Enter OTP",hint||"Enter the one-time password sent to your registered phone or email.",{inputType:"text",maxLen:6,placeholder:"••••••",numericOnly:true,bodyKey:"otp"}); return;
+    }
+    if(txStatus==="send_pin"){
+      openOtpSheet(ref,"submit_pin","Enter Card PIN",hint||"Enter your 4-digit card PIN to authorise this transaction.",{inputType:"password",maxLen:4,placeholder:"••••",numericOnly:true,bodyKey:"pin"}); return;
+    }
+    if(txStatus==="send_phone"){
+      openOtpSheet(ref,"submit_phone","Enter Phone Number",hint||"Your bank requires your phone number to complete this transaction.",{inputType:"tel",maxLen:15,placeholder:"07XXXXXXXX",numericOnly:false,bodyKey:"phone"}); return;
+    }
+    if(txStatus==="send_address"){
+      openOtpSheet(ref,"submit_address","Billing Address",hint||"Your bank requires your billing address to complete verification.",{inputType:"text",maxLen:200,placeholder:"e.g. 123 Main St, Nairobi",numericOnly:false,bodyKey:"address"}); return;
+    }
+    if(txStatus==="send_birthday"){
+      openOtpSheet(ref,"submit_birthday","Date of Birth",hint||"Your bank requires your date of birth to verify your identity.",{inputType:"text",maxLen:10,placeholder:"YYYY-MM-DD",numericOnly:false,bodyKey:"birthday"}); return;
+    }
     if(txStatus==="pay_offline"){
       stopPolling();
-      const url = d.redirect_url ?? "";
+      const url=d.redirect_url??"";
       if(url){
-        setStatusTitle("Bank Authentication");
-        setStatusDesc("A bank authentication window has opened. Please complete the verification there.");
+        setStatusTitle("3D Secure Authentication");
+        setStatusDesc("Your bank has opened a verification page. Complete it there — this screen will update automatically.");
         setView("status");
-        const popup = window.open(url, "_blank", "width=500,height=600,scrollbars=yes");
-        setDsPopup(popup);
-        setRedirectUrl(url);
-        startPolling(ref);
-        return;
+        const popup=window.open(url,"_blank","width=520,height=640,scrollbars=yes");
+        setDsPopup(popup); setRedirectUrl(url);
+        startPolling(ref); return;
       }
     }
-    if(ref){ startPolling(ref); }
-    else { showError("No transaction reference returned."); }
+    // pending / processing / unknown → poll
+    if(ref){
+      setStatusTitle("Processing Payment");
+      setStatusDesc("Your payment is being processed. Please wait…");
+      setView("status");
+      startPolling(ref);
+    } else { showError("No transaction reference returned."); }
   }
 
   async function processMpesa() {
@@ -193,12 +235,16 @@ export default function App() {
 
   async function submitOtp() {
     if(!otpCode.trim()) return;
+    const actionLabels: Record<string, string> = {
+      submit_pin:"Verifying PIN…", submit_otp:"Verifying OTP…",
+      submit_phone:"Submitting Phone…", submit_address:"Submitting Address…", submit_birthday:"Verifying Identity…",
+    };
     setView("status");
-    setStatusTitle(otpAction==="submit_pin"?"Verifying PIN…":"Verifying OTP…");
-    setStatusDesc("Please wait while we confirm your details.");
+    setStatusTitle(actionLabels[otpAction]??"Verifying…");
+    setStatusDesc("Please wait while your details are confirmed with the bank.");
     startCountdown(()=>{ showError("Verification timed out. Please try again."); });
     try {
-      const body=otpAction==="submit_pin"?{pin:otpCode,reference:pendingRef}:{otp:otpCode,reference:pendingRef};
+      const body = { [otpBodyKey]: otpCode, reference: pendingRef };
       const res=await fetch(`${API}?action=${otpAction}`,{ method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body) });
       const result=await res.json() as Parameters<typeof handleChargeResponse>[0];
       handleChargeResponse(result, pendingRef);
@@ -292,10 +338,27 @@ export default function App() {
         <p style={{ fontSize:14,color:"#606770",margin:"0 0 22px",textAlign:"center",lineHeight:1.5 }}>{otpHint}</p>
         <div style={{ ...IW,display:"flex",alignItems:"center",gap:10,marginBottom:20 }}>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#34a853" strokeWidth="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-          <input type={otpAction==="submit_pin"?"password":"text"} inputMode="numeric" value={otpCode} onChange={e=>setOtpCode(e.target.value.replace(/\D/g,"").slice(0,otpAction==="submit_pin"?4:6))} placeholder={otpAction==="submit_pin"?"••••":"••••••"} maxLength={otpAction==="submit_pin"?4:6} autoFocus style={{ ...IF,flex:1,fontSize:22,letterSpacing:6,textAlign:"center" }}/>
+          <input
+            type={otpInputType}
+            inputMode={otpInputType==="tel"?"tel":"numeric"}
+            value={otpCode}
+            onChange={e=>{
+              const v=e.target.value;
+              setOtpCode(otpNumericOnly ? v.replace(/\D/g,"").slice(0,otpMaxLen) : v.slice(0,otpMaxLen));
+            }}
+            placeholder={otpPlaceholder}
+            maxLength={otpMaxLen}
+            autoFocus
+            style={{
+              ...IF, flex:1,
+              fontSize: otpMaxLen<=6 ? 22 : 15,
+              letterSpacing: otpMaxLen<=6 ? 6 : 1,
+              textAlign: otpMaxLen<=6 ? "center" : "left",
+            }}
+          />
         </div>
         <button onClick={submitOtp} disabled={!otpCode.trim()} style={{ ...GREEN_BTN,background:otpCode.trim()?"#34a853":"#c8e6c9",cursor:otpCode.trim()?"pointer":"default",marginBottom:12 }}>
-          Confirm {otpAction==="submit_pin"?"PIN":"OTP"}
+          {otpAction==="submit_pin"?"Confirm PIN" : otpAction==="submit_otp"?"Confirm OTP" : otpAction==="submit_phone"?"Submit Phone Number" : otpAction==="submit_address"?"Submit Address" : "Confirm"}
         </button>
         <button onClick={goBackToCheckout} style={{ width:"100%",padding:"13px",background:"transparent",color:"#606770",border:"1.5px solid #dcdfe6",borderRadius:100,fontSize:14,fontWeight:500,cursor:"pointer" }}>
           Cancel Payment
