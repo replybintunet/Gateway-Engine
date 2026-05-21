@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 
 type PaymentMethod = "mpesa" | "card";
-type SheetView = "checkout" | "status" | "otp" | "receipt" | "error";
+type SheetView = "checkout" | "status" | "otp" | "receipt" | "error" | "threeds";
 
 interface CardDetails { number: string; expiry: string; cvv: string; name: string; }
 interface ReceiptData { reference: string; amount: string; masked: string; method: PaymentMethod; }
@@ -78,7 +78,7 @@ export default function App() {
   const [copied,setCopied]         = useState(false);
   const [errorMsg,setErrorMsg]     = useState("Check parameters and try again.");
   const [redirectUrl,setRedirectUrl] = useState("");
-  const [dsPopup,setDsPopup]       = useState<Window|null>(null);
+  const [iframeLoading,setIframeLoading] = useState(true);
 
   const countdownRef = useRef<ReturnType<typeof setInterval>|null>(null);
   const pollingRef   = useRef<ReturnType<typeof setInterval>|null>(null);
@@ -88,12 +88,11 @@ export default function App() {
   function stopAll() {
     if(countdownRef.current) clearInterval(countdownRef.current);
     if(pollingRef.current)   clearInterval(pollingRef.current);
-    if(dsPopup){ dsPopup.close(); setDsPopup(null); }
   }
   function stopPolling() { if(pollingRef.current) clearInterval(pollingRef.current); }
 
-  function closeAll() { stopAll(); setIsOpen(false); setView("checkout"); setIsSuccess(false); setCountdown(50); setOtpCode(""); setReceipt(null); setCopied(false); setRedirectUrl(""); }
-  function goBackToCheckout() { stopAll(); setView("checkout"); setIsSuccess(false); setCountdown(50); setOtpCode(""); setRedirectUrl(""); }
+  function closeAll() { stopAll(); setIsOpen(false); setView("checkout"); setIsSuccess(false); setCountdown(50); setOtpCode(""); setReceipt(null); setCopied(false); setRedirectUrl(""); setIframeLoading(true); }
+  function goBackToCheckout() { stopAll(); setView("checkout"); setIsSuccess(false); setCountdown(50); setOtpCode(""); setRedirectUrl(""); setIframeLoading(true); }
 
   // Starts a 50-second countdown. Calls onTimeout if it reaches 0.
   function startCountdown(onTimeout: ()=>void) {
@@ -165,10 +164,10 @@ export default function App() {
     const hint=d.display_text??"";
 
     if(txStatus==="success"){
-      stopPolling(); if(dsPopup){ dsPopup.close(); setDsPopup(null); } showReceipt(ref); return;
+      stopPolling(); showReceipt(ref); return;
     }
     if(txStatus==="failed"){
-      stopPolling(); if(dsPopup){ dsPopup.close(); setDsPopup(null); } showError(d.gateway_response??"Card declined."); return;
+      stopPolling(); showError(d.gateway_response??"Card declined."); return;
     }
     if(txStatus==="send_otp"){
       openOtpSheet(ref,"submit_otp","Enter OTP",hint||"Enter the one-time password sent to your registered phone or email.",{inputType:"text",maxLen:6,placeholder:"••••••",numericOnly:true,bodyKey:"otp"}); return;
@@ -189,11 +188,9 @@ export default function App() {
       stopPolling();
       const url=d.redirect_url??"";
       if(url){
-        setStatusTitle("3D Secure Authentication");
-        setStatusDesc("Your bank has opened a verification page. Complete it there — this screen will update automatically.");
-        setView("status");
-        const popup=window.open(url,"_blank","width=520,height=640,scrollbars=yes");
-        setDsPopup(popup); setRedirectUrl(url);
+        setRedirectUrl(url);
+        setIframeLoading(true);
+        setView("threeds");
         startPolling(ref); return;
       }
     }
@@ -363,6 +360,48 @@ export default function App() {
         <button onClick={goBackToCheckout} style={{ width:"100%",padding:"13px",background:"transparent",color:"#606770",border:"1.5px solid #dcdfe6",borderRadius:100,fontSize:14,fontWeight:500,cursor:"pointer" }}>
           Cancel Payment
         </button>
+      </div>
+
+      {/* ── 3DS / BANK AUTH DRAWER ───────────────────────────── */}
+      <div style={{ ...SHEET, transform:`translate(-50%,${vis("threeds")?"0%":"110%"})`, zIndex:10002, padding:0, display:"flex", flexDirection:"column", height:"88vh", maxHeight:"88vh" }}>
+        {/* Header */}
+        <div style={{ padding:"14px 20px 12px", borderBottom:"1px solid #e8eaef", display:"flex", alignItems:"center", justifyContent:"space-between", flexShrink:0 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+            <div style={{ width:34,height:34,background:"#e8f5e9",borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center" }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#34a853" strokeWidth="2.2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            </div>
+            <div>
+              <div style={{ fontSize:14,fontWeight:700,color:"#1f2226",fontFamily:"'Space Grotesk',sans-serif" }}>Bank Verification</div>
+              <div style={{ fontSize:11,color:"#909399",marginTop:1 }}>3D Secure — Secured by your bank</div>
+            </div>
+          </div>
+          <button onClick={goBackToCheckout} style={{ background:"transparent",border:"1.5px solid #dcdfe6",borderRadius:8,padding:"6px 14px",fontSize:12,fontWeight:600,color:"#606770",cursor:"pointer" }}>Cancel</button>
+        </div>
+
+        {/* Iframe area */}
+        <div style={{ flex:1,position:"relative",overflow:"hidden" }}>
+          {iframeLoading && (
+            <div style={{ position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:"#fff",zIndex:1 }}>
+              <div style={{ width:48,height:48,borderRadius:"50%",border:"4px solid #e2e5ec",borderTopColor:"#34a853",animation:"spin 1s linear infinite",marginBottom:16 }}/>
+              <div style={{ fontSize:14,color:"#606770" }}>Loading bank verification page…</div>
+            </div>
+          )}
+          {redirectUrl && (
+            <iframe
+              src={redirectUrl}
+              onLoad={()=>setIframeLoading(false)}
+              style={{ width:"100%",height:"100%",border:"none",display:"block" }}
+              title="Bank 3D Secure Authentication"
+              allow="payment"
+            />
+          )}
+        </div>
+
+        {/* Footer */}
+        <div style={{ padding:"12px 20px",borderTop:"1px solid #e8eaef",background:"#f8f9fb",flexShrink:0,display:"flex",alignItems:"center",gap:8 }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#34a853" strokeWidth="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          <span style={{ fontSize:12,color:"#606770" }}>Complete the verification above — this page will update automatically once confirmed.</span>
+        </div>
       </div>
 
       {/* ── RECEIPT ──────────────────────────────────────────── */}

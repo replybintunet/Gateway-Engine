@@ -1,47 +1,100 @@
-# Render Blueprint — One-click deploy for BintuPay
-# Go to https://dashboard.render.com/blueprints and connect this repo
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║              BintuPay — One-Click Render Deployment                     ║
+# ╠══════════════════════════════════════════════════════════════════════════╣
+# ║  HOW TO DEPLOY IN 5 STEPS:                                              ║
+# ║                                                                          ║
+# ║  1. Push this project to GitHub (if not already done)                   ║
+# ║     git remote add origin https://github.com/YOUR_NAME/bintupay.git     ║
+# ║     git push -u origin main                                              ║
+# ║                                                                          ║
+# ║  2. Go to https://dashboard.render.com                                  ║
+# ║     Click "New +" → "Blueprint"                                         ║
+# ║                                                                          ║
+# ║  3. Connect your GitHub repository                                       ║
+# ║     Select the bintupay repo and click "Apply"                          ║
+# ║                                                                          ║
+# ║  4. Fill in the required secrets when prompted:                         ║
+# ║     • PAYSTACK_SECRET_KEY  → from paystack.com (Settings → API Keys)   ║
+# ║     • TELEGRAM_BOT_TOKEN   → from @BotFather on Telegram               ║
+# ║     (SESSION_SECRET is auto-generated — no action needed)               ║
+# ║                                                                          ║
+# ║  5. Click "Apply" and wait ~5 minutes for build to finish               ║
+# ║     Your app will be live at: https://bintupay-api.onrender.com         ║
+# ║                                                                          ║
+# ║  AFTER DEPLOY — Set the Telegram webhook (run this once):               ║
+# ║  curl -X POST \                                                          ║
+# ║    "https://api.telegram.org/bot<YOUR_TOKEN>/setWebhook" \              ║
+# ║    -H "Content-Type: application/json" \                                ║
+# ║    -d '{"url":"https://bintupay-api.onrender.com/api/bot"}'             ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
 
 services:
+
+  # ── API Server (Express + Telegram Bot + Paystack) ──────────────────────
   - type: web
     name: bintupay-api
     runtime: node
-    region: oregon
-    plan: free
-    buildCommand: pnpm install && pnpm run build
+    region: oregon         # Change to: frankfurt (EU) or singapore (Asia)
+    plan: free             # Upgrade to "starter" ($7/mo) to avoid sleep on free tier
+
+    # Build: installs all packages and compiles TypeScript to JavaScript
+    buildCommand: pnpm install --frozen-lockfile && pnpm run build
+
+    # Start: runs the compiled API server
     startCommand: node artifacts/api-server/dist/index.mjs
+
+    # Render pings this to confirm the app started correctly
     healthCheckPath: /api/healthz
+
     envVars:
       - key: NODE_ENV
         value: production
+
       - key: PORT
         value: 8080
+
       - key: BASE_PATH
         value: /
+
+      # Auto-filled from the database created below — no action needed
       - key: DATABASE_URL
         fromDatabase:
           name: bintupay-db
           property: connectionString
+
+      # You will be prompted to enter this after clicking "Apply"
       - key: PAYSTACK_SECRET_KEY
-        sync: false
+        sync: false        # sync:false = Render asks you to type the value
+
+      # You will be prompted to enter this after clicking "Apply"
       - key: TELEGRAM_BOT_TOKEN
         sync: false
+
+      # Auto-generated random secret — no action needed
       - key: SESSION_SECRET
         generateValue: true
+
+      # The public URL of this service — used by the Telegram bot for card links
+      # Update this if you use a custom domain
       - key: FRONTEND_URL
         value: https://bintupay-api.onrender.com
 
+  # ── Frontend (React + Vite, served as static files) ─────────────────────
   - type: static
     name: bintupay-web
     runtime: static
-    buildCommand: cd artifacts/bintupay && pnpm install && pnpm run build
+    region: oregon
+
+    # Build: compiles React app to static HTML/JS/CSS files
+    buildCommand: >
+      cd artifacts/bintupay &&
+      PORT=10000 BASE_PATH=/ NODE_ENV=production pnpm install --frozen-lockfile &&
+      PORT=10000 BASE_PATH=/ NODE_ENV=production pnpm run build
+
+    # Folder that contains the compiled frontend files
     staticPublishPath: ./artifacts/bintupay/dist/public
-    envVars:
-      - key: NODE_ENV
-        value: production
-      - key: PORT
-        value: 10000
-      - key: BASE_PATH
-        value: /
+
+    # Route /api/* requests to the API server, everything else loads the app
     routes:
       - type: rewrite
         source: /api/*
@@ -50,10 +103,11 @@ services:
         source: /*
         destination: /index.html
 
+# ── PostgreSQL Database ──────────────────────────────────────────────────
 databases:
   - name: bintupay-db
     databaseName: bintupay
     user: bintu
-    plan: free
-    region: oregon
-    ipAllowList: []
+    plan: free             # Free plan: 1GB storage, 90-day expiry on free tier
+    region: oregon         # Must match the region of your web service above
+    ipAllowList: []        # Empty = only Render internal services can connect
