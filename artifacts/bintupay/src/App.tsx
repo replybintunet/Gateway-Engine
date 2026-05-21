@@ -60,7 +60,7 @@ export default function App() {
   const [amount,setAmount]   = useState("");
   const [phone,setPhone]     = useState("");
   const [card,setCard]       = useState<CardDetails>({ number:"",expiry:"",cvv:"",name:"" });
-  const [countdown,setCountdown] = useState(50);
+  const [countdown,setCountdown] = useState(180);
   const [statusTitle,setStatusTitle] = useState("Processing…");
   const [statusDesc,setStatusDesc]   = useState("");
   const [isSuccess,setIsSuccess]     = useState(false);
@@ -91,13 +91,13 @@ export default function App() {
   }
   function stopPolling() { if(pollingRef.current) clearInterval(pollingRef.current); }
 
-  function closeAll() { stopAll(); setIsOpen(false); setView("checkout"); setIsSuccess(false); setCountdown(50); setOtpCode(""); setReceipt(null); setCopied(false); setRedirectUrl(""); setIframeLoading(true); }
-  function goBackToCheckout() { stopAll(); setView("checkout"); setIsSuccess(false); setCountdown(50); setOtpCode(""); setRedirectUrl(""); setIframeLoading(true); }
+  function closeAll() { stopAll(); setIsOpen(false); setView("checkout"); setIsSuccess(false); setCountdown(180); setOtpCode(""); setReceipt(null); setCopied(false); setRedirectUrl(""); setIframeLoading(true); }
+  function goBackToCheckout() { stopAll(); setView("checkout"); setIsSuccess(false); setCountdown(180); setOtpCode(""); setRedirectUrl(""); setIframeLoading(true); }
 
-  // Starts a 50-second countdown. Calls onTimeout if it reaches 0.
+  // Starts a 3-minute countdown. Calls onTimeout if it reaches 0.
   function startCountdown(onTimeout: ()=>void) {
     if(countdownRef.current) clearInterval(countdownRef.current);
-    let remaining=50;
+    let remaining=180;
     setCountdown(remaining);
     setIsSuccess(false);
     countdownRef.current = setInterval(()=>{
@@ -109,6 +109,12 @@ export default function App() {
         onTimeout();
       }
     },1000);
+  }
+
+  function fmtCountdown(s: number) {
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    return `${String(m).padStart(2,"0")}:${String(sec).padStart(2,"0")}`;
   }
 
   function showReceipt(ref: string) {
@@ -316,7 +322,7 @@ export default function App() {
         {DRAG}
         <div style={{ display:"flex",flexDirection:"column",alignItems:"center",textAlign:"center",padding:"10px 0" }}>
           <div style={{ width:104,height:104,borderRadius:"50%",background:"#f4f6f9",border:"4px solid #e2e5ec",borderTopColor:"#34a853",display:"flex",alignItems:"center",justifyContent:"center",marginBottom:20,animation:"spin 1.2s linear infinite" }}>
-            <span style={{ fontFamily:"'Space Grotesk',sans-serif",fontSize:32,fontWeight:700,color:"#1f2226",lineHeight:1 }}>{countdown}</span>
+            <span style={{ fontFamily:"'Space Grotesk',sans-serif",fontSize:28,fontWeight:700,color:"#1f2226",lineHeight:1,letterSpacing:2 }}>{fmtCountdown(countdown)}</span>
           </div>
           <h3 style={{ margin:"0 0 8px",fontFamily:"'Space Grotesk',sans-serif",fontSize:24,color:"#1f2226" }}>{statusTitle}</h3>
           <p style={{ fontSize:14,color:"#606770",margin:0 }}>{statusDesc}</p>
