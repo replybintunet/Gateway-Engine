@@ -91,10 +91,15 @@ services:
     region: oregon
 
     # Build: compiles React app to static HTML/JS/CSS files
+    # VITE_API_URL must point to your API web service base URL (no trailing slash)
+    # so the frontend calls the backend directly instead of relying on rewrite rules.
     buildCommand: >
-      cd artifacts/bintupay &&
-      PORT=10000 BASE_PATH=/ NODE_ENV=production pnpm install --frozen-lockfile &&
-      PORT=10000 BASE_PATH=/ NODE_ENV=production pnpm run build
+      PORT=10000 BASE_PATH=/ NODE_ENV=production
+      VITE_API_URL=https://bintupay-api.onrender.com
+      pnpm install --frozen-lockfile &&
+      PORT=10000 BASE_PATH=/ NODE_ENV=production
+      VITE_API_URL=https://bintupay-api.onrender.com
+      pnpm --filter @workspace/bintupay run build
 
     # Folder that contains the compiled frontend files
     staticPublishPath: ./artifacts/bintupay/dist/public

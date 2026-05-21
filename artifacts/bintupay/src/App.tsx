@@ -6,7 +6,7 @@ type SheetView = "checkout" | "status" | "otp" | "receipt" | "error" | "threeds"
 interface CardDetails { number: string; expiry: string; cvv: string; name: string; }
 interface ReceiptData { reference: string; amount: string; masked: string; method: PaymentMethod; }
 
-const API = "/api/payment";
+const API = (import.meta.env.VITE_API_URL ?? "") + "/api/payment";
 
 function formatCardNumber(v: string) { return v.replace(/\D/g,"").slice(0,16).replace(/(.{4})/g,"$1 ").trim(); }
 function formatExpiry(v: string) { const d=v.replace(/\D/g,"").slice(0,4); return d.length>=3?d.slice(0,2)+"/"+d.slice(2):d; }
