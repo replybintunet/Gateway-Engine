@@ -72,6 +72,8 @@ export default function App() {
   const [receipt,setReceipt]       = useState<ReceiptData|null>(null);
   const [copied,setCopied]         = useState(false);
   const [errorMsg,setErrorMsg]     = useState("Check parameters and try again.");
+  const [redirectUrl,setRedirectUrl] = useState("");
+  const [dsPopup,setDsPopup]       = useState<Window|null>(null);
 
   const countdownRef = useRef<ReturnType<typeof setInterval>|null>(null);
   const pollingRef   = useRef<ReturnType<typeof setInterval>|null>(null);
@@ -81,11 +83,12 @@ export default function App() {
   function stopAll() {
     if(countdownRef.current) clearInterval(countdownRef.current);
     if(pollingRef.current)   clearInterval(pollingRef.current);
+    if(dsPopup){ dsPopup.close(); setDsPopup(null); }
   }
   function stopPolling() { if(pollingRef.current) clearInterval(pollingRef.current); }
 
-  function closeAll() { stopAll(); setIsOpen(false); setView("checkout"); setIsSuccess(false); setCountdown(50); setOtpCode(""); setReceipt(null); setCopied(false); }
-  function goBackToCheckout() { stopAll(); setView("checkout"); setIsSuccess(false); setCountdown(50); setOtpCode(""); }
+  function closeAll() { stopAll(); setIsOpen(false); setView("checkout"); setIsSuccess(false); setCountdown(50); setOtpCode(""); setReceipt(null); setCopied(false); setRedirectUrl(""); }
+  function goBackToCheckout() { stopAll(); setView("checkout"); setIsSuccess(false); setCountdown(50); setOtpCode(""); setRedirectUrl(""); }
 
   // Starts a 50-second countdown. Calls onTimeout if it reaches 0.
   function startCountdown(onTimeout: ()=>void) {
@@ -134,15 +137,29 @@ export default function App() {
     },2500);
   }
 
-  function handleChargeResponse(result:{status:boolean;message?:string;data?:{reference?:string;status?:string;gateway_response?:string}}, ref_fallback=""): void {
+  function handleChargeResponse(result:{status:boolean;message?:string;data?:{reference?:string;status?:string;gateway_response?:string;display_text?:string;redirect_url?:string}}, ref_fallback=""): void {
     if(!result.status){ showError(result.message??"Charge failed."); return; }
     const d=result.data!;
     const ref=d.reference??ref_fallback;
     const txStatus=d.status??"";
-    if(txStatus==="success"){ stopPolling(); showReceipt(ref); return; }
-    if(txStatus==="failed"){ showError(d.gateway_response??"Declined."); return; }
-    if(txStatus==="send_otp"){ stopPolling(); setPendingRef(ref); setOtpAction("submit_otp"); setOtpLabel("Enter OTP"); setOtpHint("Paystack sent a one-time password to your registered email or phone. Enter it below."); setOtpCode(""); setView("otp"); return; }
-    if(txStatus==="send_pin"){ stopPolling(); setPendingRef(ref); setOtpAction("submit_pin"); setOtpLabel("Enter Card PIN"); setOtpHint("Enter your 4-digit card PIN to authorise this transaction."); setOtpCode(""); setView("otp"); return; }
+    if(txStatus==="success"){ stopPolling(); if(dsPopup){ dsPopup.close(); setDsPopup(null); } showReceipt(ref); return; }
+    if(txStatus==="failed"){ stopPolling(); if(dsPopup){ dsPopup.close(); setDsPopup(null); } showError(d.gateway_response??"Declined."); return; }
+    if(txStatus==="send_otp"){ stopPolling(); setPendingRef(ref); setOtpAction("submit_otp"); setOtpLabel("Enter OTP"); setOtpHint(d.display_text??"Paystack sent a one-time password to your registered email or phone. Enter it below."); setOtpCode(""); setView("otp"); return; }
+    if(txStatus==="send_pin"){ stopPolling(); setPendingRef(ref); setOtpAction("submit_pin"); setOtpLabel("Enter Card PIN"); setOtpHint(d.display_text??"Enter your 4-digit card PIN to authorise this transaction."); setOtpCode(""); setView("otp"); return; }
+    if(txStatus==="pay_offline"){
+      stopPolling();
+      const url = d.redirect_url ?? "";
+      if(url){
+        setStatusTitle("Bank Authentication");
+        setStatusDesc("A bank authentication window has opened. Please complete the verification there.");
+        setView("status");
+        const popup = window.open(url, "_blank", "width=500,height=600,scrollbars=yes");
+        setDsPopup(popup);
+        setRedirectUrl(url);
+        startPolling(ref);
+        return;
+      }
+    }
     if(ref){ startPolling(ref); }
     else { showError("No transaction reference returned."); }
   }

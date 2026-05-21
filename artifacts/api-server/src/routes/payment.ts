@@ -36,10 +36,28 @@ function formatKenyanNumber(phone: string): string | false {
   return false;
 }
 
-// ─── M-Pesa STK Push ────────────────────────────────────────────────────────
+// Paystack test cards — useful for verifying the card flow
+const TEST_CARDS: Record<string, { number: string; cvv: string; expiry: string; desc: string }> = {
+  visa_success:   { number: "4084084084084081", cvv: "408", expiry: "12/30", desc: "Visa — succeeds immediately" },
+  visa_otp:       { number: "4084080000000409", cvv: "408", expiry: "12/30", desc: "Visa — triggers OTP" },
+  visa_pin:       { number: "4084080000000805", cvv: "408", expiry: "12/30", desc: "Visa — triggers PIN" },
+  mastercard:     { number: "5399834695874723", cvv: "123", expiry: "12/30", desc: "Mastercard — succeeds" },
+  verve:          { number: "5060665060665060", cvv: "123", expiry: "12/30", desc: "Verve — succeeds" },
+};
+
+function isTestCard(number: string): string | false {
+  const clean = number.replace(/\s/g, "");
+  for (const [key, card] of Object.entries(TEST_CARDS)) {
+    if (clean === card.number) return key;
+  }
+  return false;
+}
+
+// ─── POST /api/payment ───────────────────────────────────────────────────────────────
 router.post("/payment", async (req, res) => {
   const action = (req.query["action"] as string) ?? "";
 
+  // ── M-Pesa STK Push ─────────────────────────────────────────────────────────
   if (action === "charge") {
     const { phone, amount } = req.body as { phone?: string; amount?: string };
     if (!phone || !amount) {
@@ -63,7 +81,7 @@ router.post("/payment", async (req, res) => {
       const d = data as Record<string, unknown>;
       if (d["status"] === true) {
         const inner = d["data"] as Record<string, unknown>;
-        res.json({ status: true, data: { reference: inner["reference"], status: inner["status"] } });
+        res.json({ status: true, data: { reference: inner["reference"], status: inner["status"], gateway_response: inner["gateway_response"] ?? "" } });
       } else {
         res.json(data);
       }
@@ -73,7 +91,7 @@ router.post("/payment", async (req, res) => {
     return;
   }
 
-  // ─── Card Charge ──────────────────────────────────────────────────────────
+  // ── Card Charge ──────────────────────────────────────────────────────────────────────
   if (action === "card") {
     const { amount, card_number, expiry, cvv, name } = req.body as {
       amount?: string;
@@ -96,39 +114,119 @@ router.post("/payment", async (req, res) => {
     const expiryYear = rawYear.length === 2 ? `20${rawYear}` : rawYear;
     const last4 = card_number.slice(-4);
     const email = `card_${last4}_${Date.now()}@bintupay.com`;
+
+    // Detect if using a test card — helpful for debugging
+    const testCardKey = isTestCard(card_number);
+
     try {
-      const data = await paystackPost("/charge", {
+      const chargeBody: Record<string, unknown> = {
         email,
         amount: Math.round(parseFloat(amount) * 100),
         currency: "KES",
-        card: { number: card_number, cvv, expiry_month: expiryMonth, expiry_year: expiryYear },
-      });
+        card: {
+          number: card_number,
+          cvv,
+          expiry_month: expiryMonth,
+          expiry_year: expiryYear,
+        },
+        metadata: {
+          cardholder_name: name,
+          custom_fields: [
+            { display_name: "Cardholder", variable_name: "cardholder_name", value: name },
+            { display_name: "Last 4", variable_name: "card_last4", value: last4 },
+            ...(testCardKey ? [{ display_name: "Test Card", variable_name: "test_card", value: testCardKey }] : []),
+          ],
+        },
+      };
+
+      const data = await paystackPost("/charge", chargeBody);
       const d = data as Record<string, unknown>;
-      if (d["status"] === true) {
-        const inner = d["data"] as Record<string, unknown>;
-        const txStatus = inner["status"] as string;
-        if (txStatus === "failed") {
-          res.json({ status: false, message: inner["gateway_response"] ?? "Card charge declined." });
-        } else {
-          res.json({
-            status: true,
-            data: {
-              reference: inner["reference"],
-              status: txStatus,
-              gateway_response: inner["gateway_response"] ?? "Processing",
-            },
-          });
-        }
-      } else {
-        res.json({ status: false, message: (d["message"] as string) ?? "Card charge failed." });
+
+      if (d["status"] !== true) {
+        // Paystack returned status: false — charge rejected at validation level
+        res.json({ status: false, message: (d["message"] as string) ?? "Card charge rejected by gateway." });
+        return;
       }
+
+      const inner = d["data"] as Record<string, unknown>;
+      const txStatus = (inner["status"] as string) ?? "";
+      const reference = inner["reference"] as string;
+
+      // Map all known Paystack charge statuses
+      const knownStatuses = ["success", "failed", "send_otp", "send_pin", "send_address", "send_phone", "pay_offline", "open_url", "pending", "processing"];
+      if (!knownStatuses.includes(txStatus)) {
+        // Unknown status — return raw for debugging
+        res.json({
+          status: true,
+          data: {
+            reference,
+            status: txStatus,
+            gateway_response: (inner["gateway_response"] as string) ?? "Unknown status",
+            display_text: (inner["display_text"] as string) ?? "",
+            raw_response: inner,
+          },
+        });
+        return;
+      }
+
+      if (txStatus === "failed") {
+        res.json({
+          status: false,
+          message: (inner["gateway_response"] as string)
+            ?? (inner["message"] as string)
+            ?? "Card charge declined.",
+        });
+        return;
+      }
+
+      if (txStatus === "success") {
+        res.json({
+          status: true,
+          data: {
+            reference,
+            status: "success",
+            gateway_response: (inner["gateway_response"] as string) ?? "Approved",
+          },
+        });
+        return;
+      }
+
+      // Intermediate states: send_otp, send_pin, send_address, send_phone, pay_offline, pending, processing
+      const displayText = (inner["display_text"] as string) ?? "";
+
+      if (txStatus === "pay_offline" || txStatus === "open_url") {
+        // 3DS redirect required — bank authentication page
+        const redirectUrl = (inner["redirecturl"] as string) ?? (inner["url"] as string) ?? "";
+        res.json({
+          status: true,
+          data: {
+            reference,
+            status: "pay_offline",
+            gateway_response: displayText || "Redirecting to bank for 3D Secure authentication",
+            redirect_url: redirectUrl,
+            display_text: displayText,
+          },
+        });
+        return;
+      }
+
+      // OTP, PIN, address, phone, pending, processing — all need client-side action or polling
+      res.json({
+        status: true,
+        data: {
+          reference,
+          status: txStatus,
+          gateway_response: (inner["gateway_response"] as string) ?? "Processing",
+          display_text: displayText,
+        },
+      });
     } catch (err: unknown) {
-      res.json({ status: false, message: err instanceof Error ? err.message : "Gateway error." });
+      res.json({ status: false, message: err instanceof Error ? err.message : "Gateway error during card charge." });
     }
     return;
   }
 
-  // ─── Submit OTP ───────────────────────────────────────────────────────────
+  // ── Submit OTP ───────────────────────────────────────────────────────────────────────
   if (action === "submit_otp") {
     const { otp, reference } = req.body as { otp?: string; reference?: string };
     if (!otp || !reference) {
@@ -140,7 +238,15 @@ router.post("/payment", async (req, res) => {
       const d = data as Record<string, unknown>;
       if (d["status"] === true) {
         const inner = d["data"] as Record<string, unknown>;
-        res.json({ status: true, data: { reference, status: inner["status"], gateway_response: inner["gateway_response"] ?? "" } });
+        res.json({
+          status: true,
+          data: {
+            reference,
+            status: inner["status"],
+            gateway_response: inner["gateway_response"] ?? "",
+            display_text: inner["display_text"] ?? "",
+          },
+        });
       } else {
         res.json({ status: false, message: (d["message"] as string) ?? "OTP rejected." });
       }
@@ -150,7 +256,7 @@ router.post("/payment", async (req, res) => {
     return;
   }
 
-  // ─── Submit PIN ───────────────────────────────────────────────────────────
+  // ── Submit PIN ───────────────────────────────────────────────────────────────────────
   if (action === "submit_pin") {
     const { pin, reference } = req.body as { pin?: string; reference?: string };
     if (!pin || !reference) {
@@ -162,8 +268,15 @@ router.post("/payment", async (req, res) => {
       const d = data as Record<string, unknown>;
       if (d["status"] === true) {
         const inner = d["data"] as Record<string, unknown>;
-        const txStatus = inner["status"] as string;
-        res.json({ status: true, data: { reference, status: txStatus, gateway_response: inner["gateway_response"] ?? "" } });
+        res.json({
+          status: true,
+          data: {
+            reference,
+            status: inner["status"],
+            gateway_response: inner["gateway_response"] ?? "",
+            display_text: inner["display_text"] ?? "",
+          },
+        });
       } else {
         res.json({ status: false, message: (d["message"] as string) ?? "PIN rejected." });
       }
@@ -176,9 +289,11 @@ router.post("/payment", async (req, res) => {
   res.json({ status: false, message: "Invalid action context." });
 });
 
-// ─── Verify (GET) ─────────────────────────────────────────────────────────
+// ─── GET /api/payment ──────────────────────────────────────────────────────────────────
 router.get("/payment", async (req, res) => {
   const action = (req.query["action"] as string) ?? "";
+
+  // Verify transaction status
   if (action === "verify") {
     const reference = (req.query["reference"] as string) ?? "";
     if (!reference) {
@@ -190,7 +305,17 @@ router.get("/payment", async (req, res) => {
       const d = data as Record<string, unknown>;
       if (d["status"] === true) {
         const inner = d["data"] as Record<string, unknown>;
-        res.json({ status: true, data: { status: inner["status"], gateway_response: inner["gateway_response"] ?? "Updating" } });
+        res.json({
+          status: true,
+          data: {
+            status: inner["status"],
+            gateway_response: inner["gateway_response"] ?? "Updating",
+            display_text: inner["display_text"] ?? "",
+            channel: inner["channel"] ?? "",
+            amount: inner["amount"],
+            currency: inner["currency"] ?? "",
+          },
+        });
       } else {
         res.json(data);
       }
@@ -199,7 +324,48 @@ router.get("/payment", async (req, res) => {
     }
     return;
   }
+
+  // 3DS redirect callback — called after bank authentication completes
+  if (action === "callback") {
+    const reference = (req.query["reference"] as string) ?? "";
+    const trxref = (req.query["trxref"] as string) ?? "";
+    const resolvedRef = reference || trxref;
+
+    if (!resolvedRef) {
+      res.json({ status: false, message: "No transaction reference in callback." });
+      return;
+    }
+
+    try {
+      const data = await paystackGet(`/transaction/verify/${encodeURIComponent(resolvedRef)}`);
+      const d = data as Record<string, unknown>;
+      if (d["status"] === true) {
+        const inner = d["data"] as Record<string, unknown>;
+        const txStatus = (inner["status"] as string) ?? "";
+        res.json({
+          status: true,
+          data: {
+            reference: resolvedRef,
+            status: txStatus,
+            gateway_response: (inner["gateway_response"] as string) ?? "",
+            channel: inner["channel"] ?? "",
+          },
+        });
+      } else {
+        res.json({ status: false, message: "Could not verify transaction after redirect." });
+      }
+    } catch (err: unknown) {
+      res.json({ status: false, message: err instanceof Error ? err.message : "Callback verification error." });
+    }
+    return;
+  }
+
   res.json({ status: false, message: "Invalid action context." });
+});
+
+// Health check
+router.get("/healthz", (_req, res) => {
+  res.json({ status: "ok", service: "bintupay-api", timestamp: new Date().toISOString() });
 });
 
 export default router;
