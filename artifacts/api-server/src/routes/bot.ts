@@ -1,11 +1,18 @@
 import { Router, type IRouter } from "express";
+import { logger } from "../lib/logger.js";
 
 const router: IRouter = Router();
 
 const PAYSTACK_BASE = "https://api.paystack.co";
 const TG_BASE       = () => `https://api.telegram.org/bot${process.env["TELEGRAM_BOT_TOKEN"]}`;
 const PAYSTACK_KEY  = () => process.env["PAYSTACK_SECRET_KEY"] ?? "";
-const FRONTEND_URL  = process.env["FRONTEND_URL"] ?? `https://${process.env["REPLIT_DOMAINS"] ?? ""}`;
+
+function getFrontendUrl(): string {
+  if (process.env["FRONTEND_URL"]) return process.env["FRONTEND_URL"];
+  const domains = process.env["REPLIT_DOMAINS"] ?? "";
+  const first   = domains.split(",")[0]?.trim() ?? "";
+  return first ? `https://${first}` : "";
+}
 
 // Preset amounts shown as quick-pick buttons (KES)
 const PRESET_AMOUNTS = [99, 500, 1000];
@@ -35,7 +42,9 @@ type InlineButton = { text: string; url?: string; callback_data?: string };
 router.post("/bot", (req, res) => {
   res.sendStatus(200);
   const update = req.body as TelegramUpdate;
-  handleUpdate(update).catch(() => {/* silent */});
+  handleUpdate(update).catch((err: unknown) => {
+    logger.error({ err }, "Unhandled error in bot handleUpdate");
+  });
 });
 
 // ─── Main dispatcher ──────────────────────────────────────────────────────────
@@ -101,12 +110,15 @@ async function handleMessage(msg: TelegramMessage) {
 
   // ── /card ─────────────────────────────────────────────────────────────────
   if (text === "/card" || text.toLowerCase() === "card") {
-    await sendWithButtons(chatId,
-      `💳 <b>Card Payment</b>\n\n` +
+    const cardUrl = getFrontendUrl();
+    const body = `💳 <b>Card Payment</b>\n\n` +
       `Tap the button below to open the <b>BintuPay secure card payment page</b>.\n\n` +
-      `<i>Visa, Mastercard, Amex — protected by 256-bit SSL encryption.</i>`,
-      [[{ text: "🔒  Open Card Payment Page", url: FRONTEND_URL }]]
-    );
+      `<i>Visa, Mastercard, Amex — protected by 256-bit SSL encryption.</i>`;
+    if (cardUrl) {
+      await sendWithButtons(chatId, body, [[{ text: "🔒  Open Card Payment Page", url: cardUrl }]]);
+    } else {
+      await sendMsg(chatId, body + `\n\n⚠️ <i>Card payment link is not configured on this server yet.</i>`);
+    }
     return;
   }
 
@@ -403,14 +415,14 @@ async function sendPhonePrompt(chatId: number, amount: number) {
 
 // ─── Method menu ──────────────────────────────────────────────────────────────
 async function sendMethodMenu(chatId: number, firstName: string) {
+  const cardUrl = getFrontendUrl();
+  const row: InlineButton[] = [{ text: "💚  M-Pesa", callback_data: "method_mpesa" }];
+  if (cardUrl) row.push({ text: "💳  Card Payment", url: cardUrl });
   await sendWithButtons(chatId,
     `👋 <b>Welcome, ${firstName}!</b>\n\n` +
     `You've reached the <b>BintuPay Secure Payment Portal</b>.\n\n` +
     `How would you like to pay?`,
-    [[
-      { text: "💚  M-Pesa", callback_data: "method_mpesa" },
-      { text: "💳  Card Payment", url: FRONTEND_URL },
-    ]]
+    [row]
   );
 }
 
@@ -500,42 +512,43 @@ async function paystackGet(path: string) {
 }
 
 // ─── Telegram API helpers ─────────────────────────────────────────────────────
-async function sendMsg(chatId: number, html: string) {
-  await fetch(`${TG_BASE()}/sendMessage`, {
+async function tgPost(path: string, body: Record<string, unknown>): Promise<void> {
+  const res  = await fetch(`${TG_BASE()}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, text: html, parse_mode: "HTML" }),
+    body: JSON.stringify(body),
   });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "(unreadable)");
+    logger.error({ path, status: res.status, body: text }, "Telegram API error");
+  } else {
+    const json = await res.json().catch(() => null) as Record<string, unknown> | null;
+    if (json && !json["ok"]) {
+      logger.warn({ path, response: json }, "Telegram API returned ok:false");
+    }
+  }
+}
+
+async function sendMsg(chatId: number, html: string) {
+  await tgPost("/sendMessage", { chat_id: chatId, text: html, parse_mode: "HTML" });
 }
 
 async function sendForceReply(chatId: number, html: string) {
-  await fetch(`${TG_BASE()}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      chat_id: chatId, text: html, parse_mode: "HTML",
-      reply_markup: { force_reply: true, selective: true },
-    }),
+  await tgPost("/sendMessage", {
+    chat_id: chatId, text: html, parse_mode: "HTML",
+    reply_markup: { force_reply: true, selective: true },
   });
 }
 
 async function sendWithButtons(chatId: number, html: string, buttons: InlineButton[][]) {
-  await fetch(`${TG_BASE()}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      chat_id: chatId, text: html, parse_mode: "HTML",
-      reply_markup: { inline_keyboard: buttons },
-    }),
+  await tgPost("/sendMessage", {
+    chat_id: chatId, text: html, parse_mode: "HTML",
+    reply_markup: { inline_keyboard: buttons },
   });
 }
 
 async function answerCallback(callbackQueryId: string) {
-  await fetch(`${TG_BASE()}/answerCallbackQuery`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ callback_query_id: callbackQueryId }),
-  });
+  await tgPost("/answerCallbackQuery", { callback_query_id: callbackQueryId });
 }
 
 // ─── Utils ────────────────────────────────────────────────────────────────────
