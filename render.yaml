@@ -54,8 +54,9 @@ services:
       - key: NODE_ENV
         value: production
 
-      - key: PORT
-        value: 8080
+      # PORT is injected automatically by Render — do NOT set it manually.
+      # Render assigns a dynamic port per service and passes it as PORT.
+      # Your app reads process.env.PORT and listens on that value.
 
       - key: BASE_PATH
         value: /
