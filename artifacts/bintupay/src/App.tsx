@@ -46,7 +46,8 @@ function CreditCardPreview({ card }: { card: CardDetails }) {
   );
 }
 
-const SHEET: React.CSSProperties = { position:"fixed",top:0,left:"50%",width:"100%",maxWidth:450,height:"100dvh",background:"#fff",padding:"24px 24px 34px",transition:"transform 0.45s cubic-bezier(0.16,1,0.3,1)",zIndex:10000 };
+const SHEET: React.CSSProperties = { position:"fixed",top:0,left:0,width:"100%",maxWidth:"100%",height:"100%",background:"#fff",padding:"24px 24px 34px",transition:"transform 0.45s cubic-bezier(0.16,1,0.3,1)",zIndex:10000 };
+
 const DRAG = null;
 
 const IW: React.CSSProperties = { background:"#fff",border:"1.5px solid #dcdfe6",borderRadius:12,padding:"10px 16px",marginBottom:16 };
@@ -265,7 +266,8 @@ export default function App() {
   const vis = (v:SheetView) => view===v&&isOpen;
 
   return (
-    <div style={{ width:"100%",height:"100%",position:"relative",overflow:"hidden",background:"#0b0f17" }}>
+    <div style={{ width:"100%",height:"100%",position:"relative",overflow:"hidden",background:"#ffffff" }}>
+
       <div style={{ position:"absolute",top:"-10%",right:"-10%",width:600,height:600,borderRadius:"50%",background:"radial-gradient(circle,rgba(52,168,83,0.12) 0%,transparent 70%)",filter:"blur(50px)",pointerEvents:"none" }}/>
       <div style={{ position:"absolute",bottom:"-10%",left:"-10%",width:400,height:400,borderRadius:"50%",background:"radial-gradient(circle,rgba(52,168,83,0.06) 0%,transparent 70%)",filter:"blur(60px)",pointerEvents:"none" }}/>
 
