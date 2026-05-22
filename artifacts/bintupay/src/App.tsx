@@ -46,8 +46,9 @@ function CreditCardPreview({ card }: { card: CardDetails }) {
   );
 }
 
-const SHEET: React.CSSProperties = { position:"fixed",bottom:0,left:"50%",width:"100%",maxWidth:450,background:"#fff",borderTopLeftRadius:28,borderTopRightRadius:28,padding:"14px 24px 34px",boxShadow:"0 -12px 40px rgba(0,0,0,0.3)",transition:"transform 0.45s cubic-bezier(0.16,1,0.3,1)",zIndex:10000 };
-const DRAG = <div style={{ width:38,height:4,background:"#e2e5ec",borderRadius:2,margin:"0 auto 22px" }}/>;
+const SHEET: React.CSSProperties = { position:"fixed",top:0,left:"50%",width:"100%",maxWidth:450,height:"100dvh",background:"#fff",padding:"24px 24px 34px",transition:"transform 0.45s cubic-bezier(0.16,1,0.3,1)",zIndex:10000 };
+const DRAG = null;
+
 const IW: React.CSSProperties = { background:"#fff",border:"1.5px solid #dcdfe6",borderRadius:12,padding:"10px 16px",marginBottom:16 };
 const IL: React.CSSProperties = { display:"block",fontSize:11,fontWeight:700,color:"#606770",textTransform:"uppercase" };
 const IF: React.CSSProperties = { width:"100%",border:"none",background:"transparent",fontSize:16,fontWeight:600,outline:"none",color:"#1f2226" };
