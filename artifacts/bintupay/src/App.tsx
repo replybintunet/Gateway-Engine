@@ -279,7 +279,8 @@ export default function App() {
       <div onClick={closeAll} style={{ position:"fixed",inset:0,background:"rgba(11,15,25,0.55)",backdropFilter:"blur(10px)",opacity:isOpen?1:0,visibility:isOpen?"visible":"hidden",transition:"opacity 0.4s",zIndex:9999 }}/>
 
       {/* ── CHECKOUT ─────────────────────────────────────────── */}
-      <div style={{ ...SHEET, transform:`translate(-50%,${vis("checkout")?"0%":"110%"})`, maxHeight:"90vh", overflowY:"auto" }}>
+      <div style={{ ...SHEET, transform:`translateY(${vis("checkout")?"0%":"110%"})`, overflowY:"auto" }}>
+
         {DRAG}
         <h3 style={{ margin:"0 0 4px",fontFamily:"'Space Grotesk',sans-serif",fontSize:26,color:"#1f2226" }}>
           <span style={{ color:"#34a853" }}>BintuPay</span> Gateway
