@@ -96,7 +96,6 @@ export default function App() {
   function closeAll() { stopAll(); setIsOpen(false); setView("checkout"); setIsSuccess(false); setCountdown(180); setOtpCode(""); setReceipt(null); setCopied(false); setRedirectUrl(""); setIframeLoading(true); }
   function goBackToCheckout() { stopAll(); setView("checkout"); setIsSuccess(false); setCountdown(180); setOtpCode(""); setRedirectUrl(""); setIframeLoading(true); }
 
-  // Starts a 3-minute countdown. Calls onTimeout if it reaches 0.
   function startCountdown(onTimeout: ()=>void) {
     if(countdownRef.current) clearInterval(countdownRef.current);
     let remaining=180;
@@ -119,6 +118,20 @@ export default function App() {
     return `${String(m).padStart(2,"0")}:${String(sec).padStart(2,"0")}`;
   }
 
+  type SafeChargeData = {
+    reference?: string;
+    status?: string;
+    gateway_response?: string;
+    display_text?: string;
+    redirect_url?: string;
+  };
+  
+  type SafeChargeResponse = {
+    status: boolean;
+    message?: string;
+    data?: SafeChargeData;
+  };
+
   function showReceipt(ref: string) {
     stopAll();
     setIsSuccess(true);
@@ -134,8 +147,6 @@ export default function App() {
   function showError(msg: string) { stopAll(); setErrorMsg(msg||"Transaction cancelled."); setView("error"); }
 
   function startPolling(reference: string) {
-    // Don't stop the countdown — let it keep running as the overall deadline.
-    // Only reset the polling interval.
     stopPolling();
     pollingRef.current = setInterval(async ()=>{
       try {
@@ -164,7 +175,7 @@ export default function App() {
     setView("otp");
   }
 
-  function handleChargeResponse(result:{status:boolean;message?:string;data?:{reference?:string;status?:string;gateway_response?:string;display_text?:string;redirect_url?:string}}, ref_fallback=""): void {
+  function handleChargeResponse(result: SafeChargeResponse, ref_fallback=""): void {
     if(!result.status){ showError(result.message??"Charge failed."); return; }
     const d=result.data!;
     const ref=d.reference??ref_fallback;
@@ -202,7 +213,6 @@ export default function App() {
         startPolling(ref); return;
       }
     }
-    // pending / processing / unknown → poll
     if(ref){
       setStatusTitle("Processing Payment");
       setStatusDesc("Your payment is being processed. Please wait…");
@@ -219,7 +229,7 @@ export default function App() {
     startCountdown(()=>{ showError("Transaction timed out. Please try again."); });
     try {
       const res=await fetch(`${API}?action=charge`,{ method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({amount,phone}) });
-      const result=await res.json() as Parameters<typeof handleChargeResponse>[0];
+      const result=await res.json() as SafeChargeResponse;
       handleChargeResponse(result);
     } catch(err:unknown){ showError(err instanceof Error?err.message:"Network error."); }
   }
@@ -233,7 +243,7 @@ export default function App() {
     startCountdown(()=>{ showError("Transaction timed out. Please try again."); });
     try {
       const res=await fetch(`${API}?action=card`,{ method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({amount,card_number:raw,expiry:card.expiry,cvv:card.cvv,name:card.name}) });
-      const result=await res.json() as Parameters<typeof handleChargeResponse>[0];
+      const result=await res.json() as SafeChargeResponse;
       handleChargeResponse(result);
     } catch(err:unknown){ showError(err instanceof Error?err.message:"Network error."); }
   }
@@ -251,7 +261,7 @@ export default function App() {
     try {
       const body = { [otpBodyKey]: otpCode, reference: pendingRef };
       const res=await fetch(`${API}?action=${otpAction}`,{ method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body) });
-      const result=await res.json() as Parameters<typeof handleChargeResponse>[0];
+      const result=await res.json() as SafeChargeResponse;
       handleChargeResponse(result, pendingRef);
     } catch(err:unknown){ showError(err instanceof Error?err.message:"Network error."); }
   }
@@ -282,7 +292,6 @@ export default function App() {
 
       {/* ── CHECKOUT ─────────────────────────────────────────── */}
       <div style={{ ...SHEET, transform:`translateY(${vis("checkout")?"0%":"110%"})`, overflowY:"auto" }}>
-
         {DRAG}
         <h3 style={{ margin:"0 0 4px",fontFamily:"'Space Grotesk',sans-serif",fontSize:26,color:"#1f2226" }}>
           <span style={{ color:"#34a853" }}>BintuPay</span> Gateway
@@ -322,7 +331,7 @@ export default function App() {
       </div>
 
       {/* ── STATUS ───────────────────────────────────────────── */}
-      <div style={{ ...SHEET, transform:`translate(-50%,${vis("status")?"0%":"110%"})` }}>
+      <div style={{ ...SHEET, transform:`translateY(${vis("status")?"0%":"110%"})` }}>
         {DRAG}
         <div style={{ display:"flex",flexDirection:"column",alignItems:"center",textAlign:"center",padding:"10px 0" }}>
           <div style={{ width:104,height:104,borderRadius:"50%",background:"#f4f6f9",border:"4px solid #e2e5ec",borderTopColor:"#34a853",display:"flex",alignItems:"center",justifyContent:"center",marginBottom:20,animation:"spin 1.2s linear infinite" }}>
@@ -334,7 +343,7 @@ export default function App() {
       </div>
 
       {/* ── OTP / PIN ────────────────────────────────────────── */}
-      <div style={{ ...SHEET, transform:`translate(-50%,${vis("otp")?"0%":"110%"})`, zIndex:10001 }}>
+      <div style={{ ...SHEET, transform:`translateY(${vis("otp")?"0%":"110%"})`, zIndex:10001 }}>
         {DRAG}
         <div style={{ display:"flex",justifyContent:"center",marginBottom:18 }}>
           <div style={{ width:56,height:56,background:"#e8f5e9",borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center" }}>
@@ -373,7 +382,7 @@ export default function App() {
       </div>
 
       {/* ── 3DS / BANK AUTH DRAWER ───────────────────────────── */}
-      <div style={{ ...SHEET, transform:`translate(-50%,${vis("threeds")?"0%":"110%"})`, zIndex:10002, padding:0, display:"flex", flexDirection:"column", height:"88vh", maxHeight:"88vh" }}>
+      <div style={{ ...SHEET, transform:`translateY(${vis("threeds")?"0%":"110%"})`, zIndex:10002, padding:0, display:"flex", flexDirection:"column", height:"100%", maxHeight:"100%" }}>
         {/* Header */}
         <div style={{ padding:"14px 20px 12px", borderBottom:"1px solid #e8eaef", display:"flex", alignItems:"center", justifyContent:"space-between", flexShrink:0 }}>
           <div style={{ display:"flex", alignItems:"center", gap:10 }}>
@@ -415,7 +424,7 @@ export default function App() {
       </div>
 
       {/* ── RECEIPT ──────────────────────────────────────────── */}
-      <div style={{ ...SHEET, transform:`translate(-50%,${vis("receipt")?"0%":"110%"})`, zIndex:10001 }}>
+      <div style={{ ...SHEET, transform:`translateY(${vis("receipt")?"0%":"110%"})`, zIndex:10001 }}>
         {DRAG}
         {/* Success badge */}
         <div style={{ display:"flex",flexDirection:"column",alignItems:"center",marginBottom:24 }}>
@@ -466,7 +475,7 @@ export default function App() {
       </div>
 
       {/* ── ERROR ────────────────────────────────────────────── */}
-      <div style={{ ...SHEET, transform:`translate(-50%,${vis("error")?"0%":"110%"})`, background:"#fffdfd",borderTop:"4px solid #d93025",zIndex:10002 }}>
+      <div style={{ ...SHEET, transform:`translateY(${vis("error")?"0%":"110%"})`, background:"#fffdfd",borderTop:"4px solid #d93025",zIndex:10002 }}>
         {DRAG}
         <div style={{ width:48,height:48,background:"#fce8e6",borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",color:"#d93025",marginBottom:16 }}>
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
